@@ -1,0 +1,10 @@
+p2p:
+  peers: []
+
+rabbitmq:
+  host: "rabbitmq"
+  port: 5672
+  username: "guest"
+  password: "guest"
+  pub_exchange: "p2p-publish"
+  sub_exchange: "p2p-subscribe"
