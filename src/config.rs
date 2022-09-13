@@ -38,8 +38,8 @@ pub struct AlephConfig {
 impl Default for AlephConfig {
     fn default() -> Self {
         AlephConfig {
-            queue_topic: "ALEPH-QUEUE".to_string(),
-            host: "0.0.0.0".to_string(),
+            queue_topic: "ALEPH-QUEUE".to_owned(),
+            host: "0.0.0.0".to_owned(),
             port: Port(8000),
             reference_node_url: None,
             jobs: JobsConfig {
@@ -94,6 +94,8 @@ pub struct P2PConfig {
     pub clients: Vec<String>,
     /// Bootstrap peers (multiaddr format).
     pub peers: Vec<String>,
+    /// Topics to subscribe to.
+    pub topics: Vec<String>,
 }
 
 impl Default for P2PConfig {
@@ -103,18 +105,19 @@ impl Default for P2PConfig {
             port: Port(4025),
             control_port: Port(4030),
             listen_port: Port(4031),
-            daemon_host: "p2pd".to_string(),
+            daemon_host: "p2pd".to_owned(),
             reconnect_delay: 60,
-            alive_topic: "ALIVE".to_string(),
-            clients: vec!["http".to_string()],
+            alive_topic: "ALIVE".to_owned(),
+            clients: vec!["http".to_owned()],
             peers: vec![
                 "/ip4/51.159.57.71/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
-                    .to_string(),
+                    .to_owned(),
                 "/ip4/95.216.100.234/tcp/4025/p2p/Qmaxufiqdyt5uVWcy1Xh2nh3Rs3382ArnSP2umjCiNG2Vs"
-                    .to_string(),
+                    .to_owned(),
                 "/ip4/62.210.93.220/tcp/4025/p2p/QmXdci5feFmA2pxTg8p3FCyWmSKnWYAAmr7Uys1YCTFD8U"
-                    .to_string(),
+                    .to_owned(),
             ],
+            topics: vec!["ALIVE".to_owned(), "ALEPH-QUEUE".to_owned()],
         }
     }
 }
@@ -130,9 +133,9 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         StorageConfig {
-            folder: "./data".to_string(),
+            folder: "./data".to_owned(),
             store_files: false,
-            engine: "mongodb".to_string(),
+            engine: "mongodb".to_owned(),
         }
     }
 }
@@ -158,7 +161,7 @@ impl Default for EthereumConfig {
     fn default() -> Self {
         EthereumConfig {
             enabled: false,
-            api_url: "http://127.0.0.1:8545".to_string(),
+            api_url: "http://127.0.0.1:8545".to_owned(),
             packing_node: false,
             chain_id: 1,
             private_key: None,
@@ -168,7 +171,7 @@ impl Default for EthereumConfig {
             token_contract: None,
             token_start_height: 10_900_000,
             max_gas_price: 150_000_000_000,
-            authorized_emitters: vec!["0x23eC28598DCeB2f7082Cc3a9D670592DfEd6e0dC".to_string()],
+            authorized_emitters: vec!["0x23eC28598DCeB2f7082Cc3a9D670592DfEd6e0dC".to_owned()],
         }
     }
 }
@@ -183,8 +186,8 @@ pub struct MongodbConfig {
 impl Default for MongodbConfig {
     fn default() -> Self {
         MongodbConfig {
-            uri: "mongodb://127.0.0.1:27017".to_string(),
-            database: "aleph".to_string(),
+            uri: "mongodb://127.0.0.1:27017".to_owned(),
+            database: "aleph".to_owned(),
         }
     }
 }
@@ -206,16 +209,16 @@ impl Default for IpfsConfig {
     fn default() -> Self {
         IpfsConfig {
             enabled: true,
-            host: "127.0.0.1".to_string(),
+            host: "127.0.0.1".to_owned(),
             port: Port(5001),
             gateway_port: Port(8080),
             id: None,
-            alive_topic: "ALEPH_ALIVE".to_string(),
+            alive_topic: "ALEPH_ALIVE".to_owned(),
             reconnect_delay: 60,
             peers: vec![
-                "/dnsaddr/api1.aleph.im/ipfs/12D3KooWNgogVS6o8fVsPdzh2FJpCdJJLVSgJT38XGE1BJoCerHx".to_string(),
-                "/ip4/51.159.57.71/tcp/4001/p2p/12D3KooWBH3JVSBwHLNzxv7EzniBP3tDmjJaoa3EJBF9wyhZtHt2".to_string(),
-                "/ip4/62.210.93.220/tcp/4001/p2p/12D3KooWLcmvqojHzUnR7rr8YhFKGDD8z7fmsPyBfAm2rT3sFGAF".to_string()],
+                "/dnsaddr/api1.aleph.im/ipfs/12D3KooWNgogVS6o8fVsPdzh2FJpCdJJLVSgJT38XGE1BJoCerHx".to_owned(),
+                "/ip4/51.159.57.71/tcp/4001/p2p/12D3KooWBH3JVSBwHLNzxv7EzniBP3tDmjJaoa3EJBF9wyhZtHt2".to_owned(),
+                "/ip4/62.210.93.220/tcp/4001/p2p/12D3KooWLcmvqojHzUnR7rr8YhFKGDD8z7fmsPyBfAm2rT3sFGAF".to_owned()],
         }
     }
 }

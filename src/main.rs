@@ -63,7 +63,7 @@ async fn dial_peers(network_client: &mut P2PClient, peers: &Vec<String>) {
     }
 }
 
-async fn subscribe_to_topics(network_client: &mut P2PClient, topics: Vec<&str>) {
+async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String>) {
     for topic in topics {
         let topic = gossipsub::IdentTopic::new(topic);
         network_client
@@ -161,8 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dial_peers(&mut network_client, &app_config.p2p.peers).await;
 
     // Subscribe to topics
-    let topics = vec!["test-net"];
-    subscribe_to_topics(&mut network_client, topics).await;
+    subscribe_to_topics(&mut network_client, &app_config.p2p.topics).await;
 
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
