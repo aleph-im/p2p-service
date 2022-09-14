@@ -16,6 +16,7 @@ use libp2p::gossipsub::{
 use libp2p::multiaddr::Protocol;
 use libp2p::{
     core::upgrade,
+    dns::TokioDnsConfig,
     gossipsub, identity, mplex, noise,
     swarm::{SwarmBuilder, SwarmEvent},
     tcp::TokioTcpTransport,
@@ -24,21 +25,32 @@ use libp2p::{
 use libp2p_tcp::GenTcpConfig;
 use log::{debug, info};
 
+fn make_transport(
+    id_keys: &identity::Keypair,
+) -> std::io::Result<libp2p::core::transport::Boxed<(PeerId, libp2p::core::muxing::StreamMuxerBox)>>
+{
+    let tcp_transport = TokioTcpTransport::new(GenTcpConfig::default().nodelay(true));
+    let dns_transport =
+        TokioDnsConfig::system(tcp_transport).expect("should be able to create DNS transport");
+
+    let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
+        .into_authentic(&id_keys)
+        .expect("Signing libp2p-noise static DH keypair failed.");
+
+    Ok(dns_transport
+        .upgrade(upgrade::Version::V1)
+        .authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
+        .multiplex(mplex::MplexConfig::new())
+        .boxed())
+}
+
 pub async fn new(
     id_keys: identity::Keypair,
 ) -> Result<(P2PClient, impl StreamExt<Item = Event>, EventLoop), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
     let peer_id = PeerId::from(id_keys.public());
 
-    let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
-        .into_authentic(&id_keys)
-        .expect("Signing libp2p-noise static DH keypair failed.");
-
-    let transport = TokioTcpTransport::new(GenTcpConfig::default().nodelay(true))
-        .upgrade(upgrade::Version::V1)
-        .authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
-        .multiplex(mplex::MplexConfig::new())
-        .boxed();
+    let transport = make_transport(&id_keys).expect("should be able to create transport");
 
     let swarm = {
         // To content-address message, we can take the hash of message and use it as an ID.
