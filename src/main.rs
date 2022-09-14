@@ -51,15 +51,19 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
 
 async fn dial_peers(network_client: &mut P2PClient, peers: &Vec<String>) {
     for peer in peers.iter() {
-        let addr: Multiaddr = peer.parse().expect("should be a multiaddr");
-        let peer_id = match addr.iter().last() {
+        let mut addr: Multiaddr = peer.parse().expect("should be a multiaddr");
+        let last_protocol = addr.pop();
+        let peer_id = match last_protocol {
             Some(Protocol::P2p(hash)) => PeerId::from_multihash(hash).expect("valid hash"),
-            _ => todo!("Don't tell me what to do!"),
+            _ => {
+                error!("Bootstrap peer multiaddr must end with the peer ID (/p2p/<peer-id>.");
+                continue;
+            }
         };
-        network_client
-            .dial(peer_id, addr)
-            .await
-            .expect("dial to succeed");
+        match network_client.dial(peer_id, addr.clone()).await {
+            Ok(_) => info!("Successfully dialed bootstrap peer: {}", addr),
+            Err(e) => error!("Failed to dial bootstrap peer {}: {}", addr, e),
+        }
     }
 }
 
