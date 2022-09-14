@@ -99,7 +99,7 @@ async fn p2p_loop(
                         message_id: _,
                         message,
                     }) => {
-                        let routing_key = format!("{}.{}.{}", "ipfs", message.topic, propagation_source);
+                        let routing_key = format!("{}.{}.{}", "p2p", message.topic, propagation_source);
                         mq_client.publish(&routing_key, &message.data).await.unwrap();
                     }
                     None => {
