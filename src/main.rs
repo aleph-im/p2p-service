@@ -9,10 +9,10 @@ use lapin::message::Delivery;
 use lapin::options::BasicAckOptions;
 use libp2p::multiaddr::Protocol;
 use libp2p::{gossipsub, identity, Multiaddr, PeerId};
+use log::{debug, error, info};
 
 use crate::message_queue::RabbitMqClient;
 use crate::p2p::network::P2PClient;
-use log::{debug, error, info};
 
 mod config;
 mod http;
@@ -89,7 +89,6 @@ async fn p2p_loop(
     mut network_events: impl StreamExt<Item = p2p::network::Event> + std::marker::Unpin,
     mut network_client: P2PClient,
     mut mq_client: RabbitMqClient,
-    app_config: config::AppConfig,
 ) {
     loop {
         tokio::select! {
@@ -114,9 +113,6 @@ async fn p2p_loop(
                     publish_message(&mut network_client, &delivery).await;
                     delivery.ack(BasicAckOptions::default()).await.expect("ack");
                 }
-            }
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                dial_peers(&mut network_client, &app_config.p2p.peers).await;
             }
         }
     }
@@ -170,12 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
 
-    let p2p_handle = tokio::spawn(p2p_loop(
-        network_events,
-        network_client.clone(),
-        mq_client,
-        app_config.clone(),
-    ));
+    let p2p_handle = tokio::spawn(p2p_loop(network_events, network_client.clone(), mq_client));
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
