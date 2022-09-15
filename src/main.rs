@@ -78,10 +78,13 @@ async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String
 
 async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery) {
     let topic = gossipsub::IdentTopic::new(delivery.routing_key.as_str());
-    network_client
+    let publish_result = network_client
         .publish(&topic, &delivery.data)
-        .await
-        .expect("should be able to send message");
+        .await;
+
+    if let Err(e) = publish_result {
+        error!("Could not publish to P2P topic {}: {}", topic, e);
+    }
 }
 
 async fn p2p_loop(
