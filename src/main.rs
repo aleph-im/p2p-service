@@ -173,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer_id,
     });
 
+    let http_server_bind_address = format!("0.0.0.0:{}", &app_config.p2p.control_port.0);
     let http_server = HttpServer::new(move || {
         App::new()
             .app_data(Data::clone(&app_data))
@@ -181,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // register HTTP requests handlers
             .configure(http::config)
     })
-    .bind("0.0.0.0:4030")
+    .bind(http_server_bind_address)
     .expect("bind should succeed");
 
     if let Err(e) = http_server.run().await {
