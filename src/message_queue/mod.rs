@@ -92,7 +92,7 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
         .queue_bind(
             pub_queue.name().as_str(),
             pub_exchange_name,
-            "",
+            "*",
             QueueBindOptions::default(),
             FieldTable::default(),
         )
