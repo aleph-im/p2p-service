@@ -188,6 +188,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .bind(http_server_bind_address)
     .expect("bind should succeed");
 
+    info!("HTTP server listening on: {:?}", http_server.addrs());
+
     if let Err(e) = http_server.run().await {
         error!("HTTP server stopped: {:?}", e);
     }
