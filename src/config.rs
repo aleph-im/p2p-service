@@ -242,11 +242,17 @@ impl Default for SentryConfig {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(default)]
 pub struct RabbitMqConfig {
+    /// The hostname of the RabbitMQ instance.
     pub host: String,
+    /// The AMQP port of the RabbitMQ instance.
     pub port: Port,
+    /// Username.
     pub username: String,
+    /// Password.
     pub password: String,
+    /// Name of the exchange used to publish messages on the P2P network.
     pub pub_exchange: String,
+    /// Name of the exchange used by the service to relay messages received from the P2P network.
     pub sub_exchange: String,
 }
 
