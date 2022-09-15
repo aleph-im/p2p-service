@@ -64,12 +64,14 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
         .expect("RabbitMQ connection should be created");
     let channel = conn.create_channel().await.unwrap();
 
-    let pub_exchange = &app_config.rabbitmq.pub_exchange;
-    let sub_exchange = &app_config.rabbitmq.sub_exchange;
+    let pub_exchange_name = &app_config.rabbitmq.pub_exchange;
+    let sub_exchange_name = &app_config.rabbitmq.sub_exchange;
+
+    let pub_queue_name = format!("{}-queue", pub_exchange_name);
 
     channel
         .exchange_declare(
-            pub_exchange,
+            pub_exchange_name,
             ExchangeKind::Topic,
             ExchangeDeclareOptions::default(),
             FieldTable::default(),
@@ -79,7 +81,7 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
 
     let pub_queue = channel
         .queue_declare(
-            "p2p-pub-queue",
+            &pub_queue_name,
             QueueDeclareOptions::default(),
             FieldTable::default(),
         )
@@ -89,7 +91,7 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
     channel
         .queue_bind(
             pub_queue.name().as_str(),
-            pub_exchange,
+            pub_exchange_name,
             "",
             QueueBindOptions::default(),
             FieldTable::default(),
@@ -109,7 +111,7 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
 
     channel
         .exchange_declare(
-            sub_exchange,
+            sub_exchange_name,
             ExchangeKind::Topic,
             ExchangeDeclareOptions::default(),
             FieldTable::default(),
@@ -120,7 +122,7 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
     Ok(RabbitMqClient {
         channel,
         pub_consumer,
-        pub_exchange: pub_exchange.to_owned(),
-        sub_exchange: sub_exchange.to_owned(),
+        pub_exchange: pub_exchange_name.to_owned(),
+        sub_exchange: sub_exchange_name.to_owned(),
     })
 }
