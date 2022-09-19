@@ -46,7 +46,7 @@ fn make_transport(
 
 pub async fn new(
     id_keys: identity::Keypair,
-) -> Result<(P2PClient, impl StreamExt<Item = Event>, EventLoop), Box<dyn Error>> {
+) -> Result<(P2PClient, impl StreamExt<Item=Event>, EventLoop), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
     let peer_id = PeerId::from(id_keys.public());
 
@@ -265,9 +265,7 @@ impl EventLoop {
                             .await
                             .expect("receiver should not be dropped");
                     }
-                    GossipsubEvent::Subscribed { .. } => {}
-                    GossipsubEvent::Unsubscribed { .. } => {}
-                    GossipsubEvent::GossipsubNotSupported { .. } => {}
+                    gossipsub_event => { debug!("Unhandled Gossipsub event: {:?}", gossipsub_event) }
                 }
             }
             SwarmEvent::ConnectionEstablished {
@@ -280,18 +278,12 @@ impl EventLoop {
                     }
                 }
             }
-            SwarmEvent::ConnectionClosed { .. } => {}
-            SwarmEvent::IncomingConnection { .. } => {}
-            SwarmEvent::IncomingConnectionError { .. } => {}
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ = sender.send(Err(Box::new(error)));
                     }
                 }
-            }
-            SwarmEvent::BannedPeer { peer_id, .. } => {
-                debug!("Haha! You're banned, {:?}", peer_id)
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
@@ -300,12 +292,10 @@ impl EventLoop {
                     address.with(Protocol::P2p(local_peer_id.into()))
                 );
             }
-            SwarmEvent::ExpiredListenAddr { .. } => {}
-            SwarmEvent::ListenerClosed { .. } => {}
             SwarmEvent::Dialing(peer_id) => {
                 debug!("Dialing {}...", peer_id)
             }
-            e => panic!("{:?}", e),
+            swarm_event => debug!("Unhandled swarm event: {:?}", swarm_event),
         }
     }
 
