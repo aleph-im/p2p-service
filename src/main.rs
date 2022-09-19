@@ -1,16 +1,17 @@
 use std::path::PathBuf;
 
+use actix_web::{App, HttpServer, middleware};
 use actix_web::web::Data;
-use actix_web::{middleware, App, HttpServer};
 use clap::Parser;
 use futures::StreamExt;
 use lapin::message::Delivery;
 use lapin::options::BasicAckOptions;
-use libp2p::multiaddr::Protocol;
 use libp2p::{gossipsub, identity, Multiaddr, PeerId};
+use libp2p::multiaddr::Protocol;
 use log::{debug, error, info, warn};
-use crate::gossipsub::GossipsubMessage;
 
+use crate::config::AppConfig;
+use crate::gossipsub::GossipsubMessage;
 use crate::message_queue::RabbitMqClient;
 use crate::p2p::network::P2PClient;
 
@@ -133,6 +134,21 @@ async fn p2p_loop(
     }
 }
 
+fn configure_logging() {
+    let mut log_builder = env_logger::builder();
+    let logger = sentry::integrations::log::SentryLogger::with_dest(log_builder.build());
+    log::set_boxed_logger(Box::new(logger)).expect("setting global logger should succeed");
+    log::set_max_level(log::LevelFilter::Info);
+}
+
+fn configure_sentry(app_config: &AppConfig) -> Option<sentry::ClientInitGuard> {
+    app_config.sentry.dsn.as_ref().map(|dsn| sentry::init((
+        dsn.clone(), sentry::ClientOptions {
+            release: sentry::release_name!(),
+            ..Default::default()
+        })))
+}
+
 pub struct AppState {
     pub app_config: config::AppConfig,
     pub p2p_client: std::sync::Mutex<P2PClient>,
@@ -141,17 +157,19 @@ pub struct AppState {
 
 #[actix_web::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    configure_logging();
 
     let args = CliArgs::parse();
     debug!("CLI args: {:?}", args);
 
+    let app_config = read_config(&args.config);
+    debug!("Config: {:?}", app_config);
+
+    let _sentry_guard = configure_sentry(&app_config);
+
     let id_keys = load_p2p_private_key(&args.private_key_file);
     let peer_id = PeerId::from(id_keys.public());
     info!("Peer ID: {:?}", peer_id);
-
-    let app_config = read_config(&args.config);
-    debug!("Config: {:?}", app_config);
 
     let (mut network_client, network_events, network_event_loop) =
         p2p::network::new(id_keys).await?;
@@ -195,6 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .app_data(Data::clone(&app_data))
             // enable logger - always register actix-web Logger middleware last
             .wrap(middleware::Logger::default())
+            .wrap(sentry_actix::Sentry::new())
             // register HTTP requests handlers
             .configure(http::config)
     })
