@@ -8,7 +8,8 @@ use lapin::message::Delivery;
 use lapin::options::BasicAckOptions;
 use libp2p::multiaddr::Protocol;
 use libp2p::{gossipsub, identity, Multiaddr, PeerId};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
+use crate::gossipsub::GossipsubMessage;
 
 use crate::message_queue::RabbitMqClient;
 use crate::p2p::network::P2PClient;
@@ -87,6 +88,19 @@ async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery) {
     }
 }
 
+async fn forward_p2p_message(mq_client: &mut RabbitMqClient, message: GossipsubMessage) {
+    match message.source {
+        None => {
+            warn!("Received pubsub message from an unspecified sender. Discarding.");
+            return;
+        }
+        Some(peer_id) => {
+            let routing_key = format!("{}.{}.{}", "p2p", message.topic, peer_id);
+            mq_client.publish(&routing_key, &message.data).await.unwrap();
+        }
+    }
+}
+
 async fn p2p_loop(
     mut network_events: impl StreamExt<Item=p2p::network::Event> + std::marker::Unpin,
     mut network_client: P2PClient,
@@ -97,12 +111,11 @@ async fn p2p_loop(
             network_event = network_events.next() => {
                 match network_event {
                     Some(p2p::network::Event::PubsubMessage {
-                        propagation_source,
+                        propagation_source: _,
                         message_id: _,
                         message,
                     }) => {
-                        let routing_key = format!("{}.{}.{}", "p2p", message.topic, propagation_source);
-                        mq_client.publish(&routing_key, &message.data).await.unwrap();
+                        forward_p2p_message(&mut mq_client, message).await;
                     }
                     None => {
                         error!("Event loop stopped");
