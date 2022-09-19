@@ -1,3 +1,4 @@
+use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -24,10 +25,12 @@ pub struct P2PConfig {
     /// Protocols to use for P2P communication.
     pub clients: Vec<String>,
     /// Bootstrap peers (multiaddr format).
-    pub peers: Vec<String>,
+    pub peers: Vec<Multiaddr>,
     /// Topics to subscribe to.
     pub topics: Vec<String>,
 }
+
+const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
 
 impl Default for P2PConfig {
     fn default() -> Self {
@@ -42,11 +45,11 @@ impl Default for P2PConfig {
             clients: vec!["http".to_owned()],
             peers: vec![
                 "/ip4/51.159.57.71/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
-                    .to_owned(),
+                    .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
                 "/ip4/95.216.100.234/tcp/4025/p2p/Qmaxufiqdyt5uVWcy1Xh2nh3Rs3382ArnSP2umjCiNG2Vs"
-                    .to_owned(),
+                    .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
                 "/ip4/62.210.93.220/tcp/4025/p2p/QmXdci5feFmA2pxTg8p3FCyWmSKnWYAAmr7Uys1YCTFD8U"
-                    .to_owned(),
+                    .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
             ],
             topics: vec!["ALIVE".to_owned(), "ALEPH-QUEUE".to_owned()],
         }
