@@ -48,20 +48,20 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
     identity::Keypair::Rsa(rsa_keypair)
 }
 
-async fn dial_peers(network_client: &mut P2PClient, peers: &Vec<String>) {
-    for peer in peers.iter() {
-        let mut addr: Multiaddr = peer.parse().expect("should be a multiaddr");
+async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &Vec<Multiaddr>) {
+    for peer_addr in peers.iter() {
+        let mut addr = peer_addr.clone();
         let last_protocol = addr.pop();
         let peer_id = match last_protocol {
             Some(Protocol::P2p(hash)) => PeerId::from_multihash(hash).expect("valid hash"),
             _ => {
-                error!("Bootstrap peer multiaddr must end with the peer ID (/p2p/<peer-id>.");
+                error!("Bootstrap peer multiaddr must end with its peer ID (/p2p/<peer-id>.");
                 continue;
             }
         };
-        match network_client.dial(peer_id, addr.clone()).await {
-            Ok(_) => info!("Successfully dialed bootstrap peer: {}", addr),
-            Err(e) => error!("Failed to dial bootstrap peer {}: {}", addr, e),
+        match network_client.dial(peer_id, addr).await {
+            Ok(_) => info!("Successfully dialed bootstrap peer: {}", &peer_addr),
+            Err(e) => error!("Failed to dial bootstrap peer {}: {}", peer_addr, e),
         }
     }
 }
@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Dial bootstrap peers
-    dial_peers(&mut network_client, &app_config.p2p.peers).await;
+    dial_bootstrap_peers(&mut network_client, &app_config.p2p.peers).await;
 
     // Subscribe to topics
     subscribe_to_topics(&mut network_client, &app_config.p2p.topics).await;
