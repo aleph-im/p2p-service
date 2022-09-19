@@ -88,7 +88,7 @@ async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery) {
 }
 
 async fn p2p_loop(
-    mut network_events: impl StreamExt<Item = p2p::network::Event> + std::marker::Unpin,
+    mut network_events: impl StreamExt<Item=p2p::network::Event> + std::marker::Unpin,
     mut network_client: P2PClient,
     mut mq_client: RabbitMqClient,
 ) {
@@ -185,8 +185,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // register HTTP requests handlers
             .configure(http::config)
     })
-    .bind(http_server_bind_address)
-    .expect("bind should succeed");
+        .workers(app_config.p2p.nb_api_workers)
+        .bind(http_server_bind_address)
+        .expect("bind should succeed");
 
     info!("HTTP server listening on: {:?}", http_server.addrs());
 

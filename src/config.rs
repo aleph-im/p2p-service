@@ -28,6 +28,8 @@ pub struct P2PConfig {
     pub peers: Vec<Multiaddr>,
     /// Topics to subscribe to.
     pub topics: Vec<String>,
+    /// Number of API workers.
+    pub nb_api_workers: usize,
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -52,6 +54,7 @@ impl Default for P2PConfig {
                     .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
             ],
             topics: vec!["ALIVE".to_owned(), "ALEPH-QUEUE".to_owned()],
+            nb_api_workers: 4,
         }
     }
 }
