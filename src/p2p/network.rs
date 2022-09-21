@@ -118,6 +118,12 @@ impl Debug for MyBehaviourEvent {
 }
 
 #[derive(Debug)]
+pub struct NodeInfo {
+    pub peer_id: PeerId,
+    pub multiaddrs: Vec<Multiaddr>,
+}
+
+#[derive(Debug)]
 enum Command {
     StartListening {
         addr: Multiaddr,
@@ -128,6 +134,9 @@ enum Command {
         peer_addr: Multiaddr,
         sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
 
+    },
+    Identify {
+        sender: oneshot::Sender<Result<NodeInfo, Box<dyn Error + Send>>>,
     },
     Subscribe {
         topic: gossipsub::IdentTopic,
@@ -155,7 +164,7 @@ impl P2PClient {
     /// Start listening for P2P connections from other nodes.
     pub async fn start_listening(&mut self, addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command::<()>(Command::StartListening { addr, sender }, receiver).await
+        self.send_command(Command::StartListening { addr, sender }, receiver).await
     }
 
     /// Dial a peer.
@@ -170,6 +179,11 @@ impl P2PClient {
             peer_addr,
             sender,
         }, receiver).await
+    }
+
+    pub async fn identify(&mut self) -> Result<NodeInfo, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_command(Command::Identify {sender}, receiver).await
     }
 
     /// Subscribe to a pubsub topic.
@@ -324,6 +338,10 @@ impl EventLoop {
                 } else {
                     todo!("Already dialing peer.");
                 }
+            }
+            Command::Identify { sender } => {
+                let multiaddrs = self.swarm.external_addresses().map(|record| record.addr.clone()).collect();
+                let _ = sender.send(Ok(NodeInfo { peer_id: self.swarm.local_peer_id().clone(), multiaddrs }));
             }
             Command::Subscribe { topic, sender } => {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {

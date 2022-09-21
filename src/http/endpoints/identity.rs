@@ -1,16 +1,24 @@
-use actix_web::{Responder, web};
+use actix_web::{web};
+use libp2p::{Multiaddr, PeerId};
 use serde::Serialize;
 use crate::AppState;
+use crate::http::endpoints::error::EndpointError;
+use crate::p2p::network::NodeInfo;
 
 #[derive(Serialize, Debug)]
-struct IdentifyResponse {
-    pub peer_id: String,
+pub struct IdentifyResponse {
+    pub peer_id: PeerId,
+    pub multiaddrs: Vec<Multiaddr>,
 }
 
-pub async fn identify(app_state: web::Data<AppState>) -> impl Responder {
-    let response = IdentifyResponse {
-        peer_id: app_state.peer_id.to_string(),
-    };
+impl From<NodeInfo> for IdentifyResponse {
+    fn from(node_info: NodeInfo) -> Self {
+        Self { peer_id: node_info.peer_id, multiaddrs: node_info.multiaddrs }
+    }
+}
 
-    web::Json(response)
+pub async fn identify(app_state: web::Data<AppState>) -> Result<web::Json<IdentifyResponse>, actix_web::Error> {
+    let mut p2p_client = app_state.p2p_client.lock().map_err(|_| EndpointError::InternalError)?;
+    let node_info = p2p_client.identify().await.map_err(|_| EndpointError::InternalError)?;
+    Ok(web::Json(node_info.into()))
 }
