@@ -121,86 +121,79 @@ impl Debug for MyBehaviourEvent {
 enum Command {
     StartListening {
         addr: Multiaddr,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
     Dial {
         peer_id: PeerId,
         peer_addr: Multiaddr,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
     Subscribe {
         topic: gossipsub::IdentTopic,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
     PublishMessage {
         topic: gossipsub::IdentTopic,
         message: Vec<u8>,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
+}
+
+#[derive(Debug)]
+/// A wrapper around P2P network commands.
+struct CommandWrapper {
+    /// The command to execute.
+    command: Command,
+    /// A channel with which to send the response of the command.
+    sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
 }
 
 #[derive(Clone)]
 pub struct P2PClient {
-    sender: mpsc::Sender<Command>,
+    /// A channel to send commands to the P2P network task.
+    sender: mpsc::Sender<CommandWrapper>,
 }
 
 impl P2PClient {
-    pub async fn start_listening(&mut self, addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
+    async fn send_command(&mut self, command: Command) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(Command::StartListening { addr, sender })
-            .await
-            .expect("Command receiver not to be dropped.");
-        receiver.await.expect("Sender not to be dropped.")
+        self.sender.send(CommandWrapper { command, sender }).await.expect("Command receiver should not to be dropped");
+        receiver.await.expect("Sender should not be dropped")
     }
 
+    /// Start listening for P2P connections from other nodes.
+    pub async fn start_listening(&mut self, addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
+        self.send_command(Command::StartListening { addr }).await
+    }
+
+    /// Dial a peer.
     pub async fn dial(
         &mut self,
         peer_id: PeerId,
         peer_addr: Multiaddr,
     ) -> Result<(), Box<dyn Error + Send>> {
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(Command::Dial {
-                peer_id,
-                peer_addr,
-                sender,
-            })
-            .await
-            .expect("Command receiver not to be dropped");
-        receiver.await.expect("Sender not to be dropped.")
+        self.send_command(Command::Dial {
+            peer_id,
+            peer_addr,
+        }).await
     }
 
+    /// Subscribe to a pubsub topic.
     pub async fn subscribe(
         &mut self,
         topic: &gossipsub::IdentTopic,
     ) -> Result<(), Box<dyn Error + Send>> {
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(Command::Subscribe {
-                topic: topic.clone(),
-                sender,
-            })
-            .await
-            .expect("Command receiver not to be dropped");
-        receiver.await.expect("sender not to be dropped")
+        self.send_command(Command::Subscribe {
+            topic: topic.clone(),
+        }).await
     }
 
+    /// Publish a message on a pubsub topic.
     pub async fn publish(
         &mut self,
         topic: &gossipsub::IdentTopic,
         message: &[u8],
     ) -> Result<(), Box<dyn Error + Send>> {
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(Command::PublishMessage {
-                topic: topic.clone(),
-                message: message.to_vec(),
-                sender,
-            })
-            .await
-            .expect("Command receiver not to be dropped");
-        receiver.await.expect("Sender not to be dropped")
+        self.send_command(Command::PublishMessage {
+            topic: topic.clone(),
+            message: message.to_vec(),
+        }).await
     }
 }
 
@@ -214,7 +207,7 @@ pub enum Event {
 
 pub struct EventLoop {
     swarm: Swarm<MyBehaviour>,
-    command_receiver: mpsc::Receiver<Command>,
+    command_receiver: mpsc::Receiver<CommandWrapper>,
     event_sender: mpsc::Sender<Event>,
     pending_dial: HashMap<PeerId, oneshot::Sender<Result<(), Box<dyn Error + Send>>>>,
 }
@@ -222,7 +215,7 @@ pub struct EventLoop {
 impl EventLoop {
     fn new(
         swarm: Swarm<MyBehaviour>,
-        command_receiver: mpsc::Receiver<Command>,
+        command_receiver: mpsc::Receiver<CommandWrapper>,
         event_sender: mpsc::Sender<Event>,
     ) -> Self {
         Self {
@@ -237,8 +230,8 @@ impl EventLoop {
         loop {
             futures::select! {
                 event = self.swarm.next() => self.handle_event(event.expect("Swarm stream to be infinite")).await,
-                command = self.command_receiver.next() => match command {
-                    Some(c) => self.handle_command(c).await,
+                command_wrapper = self.command_receiver.next() => match command_wrapper {
+                    Some(c) => self.handle_command(c.command, c.sender).await,
                     // Command channel closed, shut down the event loop.
                     None => return,
                 }
@@ -299,9 +292,9 @@ impl EventLoop {
         }
     }
 
-    async fn handle_command(&mut self, command: Command) -> () {
+    async fn handle_command(&mut self, command: Command, sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>) -> () {
         match command {
-            Command::StartListening { addr, sender } => {
+            Command::StartListening { addr } => {
                 let _ = match self.swarm.listen_on(addr) {
                     Ok(_) => sender.send(Ok(())),
                     Err(e) => sender.send(Err(Box::new(e))),
@@ -310,7 +303,6 @@ impl EventLoop {
             Command::Dial {
                 peer_id,
                 peer_addr,
-                sender,
             } => {
                 if let hash_map::Entry::Vacant(e) = self.pending_dial.entry(peer_id) {
                     match self
@@ -328,7 +320,7 @@ impl EventLoop {
                     todo!("Already dialing peer.");
                 }
             }
-            Command::Subscribe { topic, sender } => {
+            Command::Subscribe { topic } => {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
                     let _ = sender.send(Err(Box::new(e)));
                 } else {
@@ -338,7 +330,6 @@ impl EventLoop {
             Command::PublishMessage {
                 topic,
                 message,
-                sender,
             } => {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, message) {
                     let _ = sender.send(Err(Box::new(e)));
