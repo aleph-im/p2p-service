@@ -59,20 +59,11 @@ impl Default for P2PConfig {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 #[serde(default)]
 pub struct SentryConfig {
     pub dsn: Option<String>,
     pub traces_sample_rate: Option<f32>,
-}
-
-impl Default for SentryConfig {
-    fn default() -> Self {
-        SentryConfig {
-            dsn: None,
-            traces_sample_rate: None,
-        }
-    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
