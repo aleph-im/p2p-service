@@ -16,6 +16,7 @@ use crate::config::AppConfig;
 ///    (= the "pub" exchange/queue).
 /// 2. An exchange where the P2P service will publish pubsub messages received over the P2P
 ///    network for the other processes on the node to consume (= the "sub" exchange).
+#[derive(Clone)]
 pub struct RabbitMqClient {
     channel: Channel,
     pub_consumer: Consumer,
