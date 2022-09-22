@@ -102,36 +102,28 @@ async fn forward_p2p_message(mq_client: &mut RabbitMqClient, message: GossipsubM
     }
 }
 
-async fn p2p_loop(
-    mut network_events: impl StreamExt<Item=p2p::network::Event> + std::marker::Unpin,
-    mut network_client: P2PClient,
-    mut mq_client: RabbitMqClient,
-) {
-    loop {
-        tokio::select! {
-            network_event = network_events.next() => {
-                match network_event {
-                    Some(p2p::network::Event::PubsubMessage {
-                        propagation_source: _,
-                        message_id: _,
-                        message,
-                    }) => {
-                        forward_p2p_message(&mut mq_client, message).await;
-                    }
-                    None => {
-                        error!("Event loop stopped");
-                        break;
-                    }
-                }
-            }
-            message_to_publish = mq_client.next() => {
-                if let Some(Ok(delivery)) = message_to_publish {
-                    publish_message(&mut network_client, &delivery).await;
-                    delivery.ack(BasicAckOptions::default()).await.expect("ack");
-                }
+async fn mq_to_p2p_loop(mut mq_client: RabbitMqClient, mut network_client: P2PClient) {
+    while let Some(delivery) = mq_client.next().await {
+        if let Ok(delivery) = delivery {
+            publish_message(&mut network_client, &delivery).await;
+            delivery.ack(BasicAckOptions::default()).await.expect("RabbitMQ message ack should succeed");
+        }
+    }
+}
+
+async fn p2p_to_mq_loop(mut mq_client: RabbitMqClient, mut network_events: impl StreamExt<Item=p2p::network::Event> + std::marker::Unpin) {
+    while let Some(network_event) = network_events.next().await {
+        match network_event {
+            p2p::network::Event::PubsubMessage {
+                propagation_source: _,
+                message_id: _,
+                message,
+            } => {
+                forward_p2p_message(&mut mq_client, message).await;
             }
         }
     }
+    error!("Event loop stopped");
 }
 
 fn configure_logging() {
@@ -199,7 +191,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
 
-    let p2p_handle = tokio::spawn(p2p_loop(network_events, network_client.clone(), mq_client));
+    let mq_to_p2p_handle = tokio::spawn(mq_to_p2p_loop(mq_client.clone(), network_client.clone()));
+    let p2p_to_mq_handle = tokio::spawn(p2p_to_mq_loop(mq_client, network_events));
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
@@ -228,11 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // If the HTTP server goes down, cancel the P2P loops as well
-    p2p_event_loop_handle.abort();
-    let _ = p2p_event_loop_handle.await;
-
-    p2p_handle.abort();
-    let _ = p2p_handle.await;
+    let handles = vec![p2p_event_loop_handle, mq_to_p2p_handle, p2p_to_mq_handle];
+    for handle in handles {
+        let _ = handle.abort();
+    }
 
     Ok(())
 }
