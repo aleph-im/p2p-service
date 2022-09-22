@@ -32,7 +32,7 @@ struct CliArgs {
     private_key_file: PathBuf,
 }
 
-fn read_config(config_file: &PathBuf) -> config::AppConfig {
+fn read_config(config_file: &PathBuf) -> AppConfig {
     let f = std::fs::File::open(config_file).expect("could not open config.yml");
     serde_yaml::from_reader(&f).expect("invalid YAML content")
 }
@@ -50,7 +50,7 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
     identity::Keypair::Rsa(rsa_keypair)
 }
 
-async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &Vec<Multiaddr>) {
+async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr]) {
     for peer_addr in peers.iter() {
         let mut addr = peer_addr.clone();
         let last_protocol = addr.pop();
@@ -74,7 +74,7 @@ async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String
         network_client
             .subscribe(&topic)
             .await
-            .expect(&format!("subscription to {} should succeed", topic));
+            .unwrap_or_else(|_| panic!("subscription to {} should succeed", topic));
     }
 }
 
@@ -93,7 +93,6 @@ async fn forward_p2p_message(mq_client: &mut RabbitMqClient, message: GossipsubM
     match message.source {
         None => {
             warn!("Received pubsub message from an unspecified sender. Discarding.");
-            return;
         }
         Some(peer_id) => {
             let routing_key = format!("{}.{}.{}", "p2p", message.topic, peer_id);
@@ -111,7 +110,7 @@ async fn mq_to_p2p_loop(mut mq_client: RabbitMqClient, mut network_client: P2PCl
     }
 }
 
-async fn p2p_to_mq_loop(mut mq_client: RabbitMqClient, mut network_events: impl StreamExt<Item=p2p::network::Event> + std::marker::Unpin) {
+async fn p2p_to_mq_loop(mut mq_client: RabbitMqClient, mut network_events: impl StreamExt<Item=p2p::network::Event> + Unpin) {
     while let Some(network_event) = network_events.next().await {
         match network_event {
             p2p::network::Event::PubsubMessage {
@@ -142,8 +141,8 @@ fn configure_sentry(app_config: &AppConfig) -> Option<sentry::ClientInitGuard> {
 }
 
 pub struct AppState {
-    pub app_config: config::AppConfig,
-    pub p2p_client: std::sync::Mutex<P2PClient>,
+    pub app_config: AppConfig,
+    pub p2p_client: tokio::sync::Mutex<P2PClient>,
     pub peer_id: PeerId,
 }
 
@@ -196,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
-        p2p_client: std::sync::Mutex::new(network_client.clone()),
+        p2p_client: tokio::sync::Mutex::new(network_client.clone()),
         peer_id,
     });
 
@@ -223,7 +222,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // If the HTTP server goes down, cancel the P2P loops as well
     let handles = vec![p2p_event_loop_handle, mq_to_p2p_handle, p2p_to_mq_handle];
     for handle in handles {
-        let _ = handle.abort();
+        handle.abort();
+        let _ = handle.await;
     }
 
     Ok(())

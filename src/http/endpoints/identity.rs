@@ -18,7 +18,7 @@ impl From<NodeInfo> for IdentifyResponse {
 }
 
 pub async fn identify(app_state: web::Data<AppState>) -> Result<web::Json<IdentifyResponse>, actix_web::Error> {
-    let mut p2p_client = app_state.p2p_client.lock().map_err(|_| EndpointError::InternalError)?;
+    let mut p2p_client = app_state.p2p_client.lock().await;
     let node_info = p2p_client.identify().await.map_err(|_| EndpointError::InternalError)?;
     Ok(web::Json(node_info.into()))
 }

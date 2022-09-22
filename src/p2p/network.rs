@@ -34,7 +34,7 @@ fn make_transport(
         TokioDnsConfig::system(tcp_transport).expect("should be able to create DNS transport");
 
     let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
-        .into_authentic(&id_keys)
+        .into_authentic(id_keys)
         .expect("Signing libp2p-noise static DH keypair failed.");
 
     Ok(dns_transport
@@ -117,6 +117,9 @@ impl Debug for MyBehaviourEvent {
     }
 }
 
+type CommandResponseSender<T=()> = oneshot::Sender<Result<T, Box<dyn Error + Send>>>;
+type CommandResponseReceiver<T=()> = oneshot::Receiver<Result<T, Box<dyn Error + Send>>>;
+
 #[derive(Debug)]
 pub struct NodeInfo {
     pub peer_id: PeerId,
@@ -127,25 +130,25 @@ pub struct NodeInfo {
 enum Command {
     StartListening {
         addr: Multiaddr,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
+        sender: CommandResponseSender,
     },
     Dial {
         peer_id: PeerId,
         peer_addr: Multiaddr,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
+        sender: CommandResponseSender,
 
     },
     Identify {
-        sender: oneshot::Sender<Result<NodeInfo, Box<dyn Error + Send>>>,
+        sender: CommandResponseSender<NodeInfo>,
     },
     Subscribe {
         topic: gossipsub::IdentTopic,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
+        sender: CommandResponseSender,
     },
     PublishMessage {
         topic: gossipsub::IdentTopic,
         message: Vec<u8>,
-        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
+        sender: CommandResponseSender,
     },
 }
 
@@ -156,7 +159,7 @@ pub struct P2PClient {
 }
 
 impl P2PClient {
-    async fn send_command<TResponse>(&mut self, command: Command, receiver: oneshot::Receiver<Result<TResponse, Box<dyn Error + Send>>>) -> Result<TResponse, Box<dyn Error + Send>> {
+    async fn send_command<TResponse>(&mut self, command: Command, receiver: CommandResponseReceiver<TResponse>) -> Result<TResponse, Box<dyn Error + Send>> {
         self.sender.send(command).await.expect("Command receiver should not to be dropped");
         receiver.await.expect("Sender should not be dropped")
     }
@@ -227,7 +230,7 @@ pub struct EventLoop {
     swarm: Swarm<MyBehaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
-    pending_dial: HashMap<PeerId, oneshot::Sender<Result<(), Box<dyn Error + Send>>>>,
+    pending_dial: HashMap<PeerId, CommandResponseSender>,
 }
 
 impl EventLoop {
@@ -310,7 +313,7 @@ impl EventLoop {
         }
     }
 
-    async fn handle_command(&mut self, command: Command) -> () {
+    async fn handle_command(&mut self, command: Command) {
         match command {
             Command::StartListening { addr, sender } => {
                 let _ = match self.swarm.listen_on(addr) {
@@ -341,7 +344,7 @@ impl EventLoop {
             }
             Command::Identify { sender } => {
                 let multiaddrs = self.swarm.external_addresses().map(|record| record.addr.clone()).collect();
-                let _ = sender.send(Ok(NodeInfo { peer_id: self.swarm.local_peer_id().clone(), multiaddrs }));
+                let _ = sender.send(Ok(NodeInfo { peer_id: *self.swarm.local_peer_id(), multiaddrs }));
             }
             Command::Subscribe { topic, sender } => {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
