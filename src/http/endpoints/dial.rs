@@ -1,10 +1,11 @@
 use actix_web::{HttpResponse, Responder, web};
 use libp2p::{Multiaddr, PeerId};
 use libp2p::swarm::DialError;
-use log::warn;
+use log::{error, warn};
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::http::endpoints::error::EndpointError;
 
 #[derive(Deserialize, Debug)]
 pub struct DialRequest {
@@ -12,35 +13,37 @@ pub struct DialRequest {
     peer_id: PeerId,
 }
 
-pub async fn dial(
-    app_state: web::Data<AppState>,
-    dial_request: web::Json<DialRequest>,
-) -> impl Responder {
-    let DialRequest { peer_id, multiaddr } = dial_request.0;
-    let mut p2p_client = app_state.p2p_client.lock().await;
-    if let Err(err) = p2p_client.dial(peer_id, multiaddr.clone()).await {
-        if let Some(dial_err) = err.downcast_ref::<DialError>() {
-            return if let DialError::WrongPeerId {
-                obtained,
-                endpoint: _endpoint,
-            } = dial_err
-            {
+fn handle_dial_error(error: Box<dyn std::error::Error + Send>, peer_id: PeerId, multiaddr: Multiaddr) -> EndpointError {
+    if let Some(dial_error) = error.downcast_ref::<DialError>() {
+        match dial_error {
+            DialError::WrongPeerId { obtained, endpoint: _ } => {
                 warn!(
                     "Wrong peer ID: obtained {:?} - user specified {:?}",
                     obtained, peer_id
                 );
-                HttpResponse::Forbidden().body("Wrong peer ID")
-            } else {
+                EndpointError::Forbidden
+            }
+            _ => {
                 warn!(
                     "Failed to dial {:?} with multiaddr {:?}: {:?}",
-                    peer_id, multiaddr, err
+                    peer_id, multiaddr, error
                 );
-                HttpResponse::NotFound().body(format!(
-                    "Could not find peer {} with multiaddr {}",
-                    peer_id, multiaddr
-                ))
-            };
+                EndpointError::NotFound
+            }
         }
+    } else {
+        error!("Failed to dial {:?} with multiaddr {:?}: {:?}", peer_id, multiaddr, error);
+        EndpointError::InternalError
     }
-    HttpResponse::Ok().into()
+}
+
+pub async fn dial(
+    app_state: web::Data<AppState>,
+    dial_request: web::Json<DialRequest>,
+) -> Result<impl Responder, actix_web::Error> {
+    let DialRequest { peer_id, multiaddr } = dial_request.0;
+    let mut p2p_client = app_state.p2p_client.lock().await;
+    p2p_client.dial(peer_id, multiaddr.clone()).await.map_err(|e| handle_dial_error(e, peer_id, multiaddr))?;
+
+    Ok(HttpResponse::Ok())
 }
