@@ -66,6 +66,7 @@ pub async fn new(
             .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
             .message_id_fn(message_id_fn) // content-address messages. No two messages of the
             // same content will be propagated.
+            .max_transmit_size(262144) // Inline messages can be quite large, up to over 200KB.
             .build()
             .expect("Valid config");
 
