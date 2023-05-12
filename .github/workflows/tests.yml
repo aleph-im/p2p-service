@@ -23,7 +23,7 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         profile: minimal
-        toolchain: 1.63
+        toolchain: 1.68
         override: true
         components: rustfmt, clippy
     - name: Set up cargo cache

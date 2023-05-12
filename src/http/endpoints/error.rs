@@ -16,7 +16,7 @@ impl Display for EndpointError {
             Self::NotFound => "not found",
             Self::InternalError => "internal error",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 

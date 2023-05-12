@@ -1,4 +1,4 @@
-FROM rust:1.63 as builder
+FROM rust:1.68 as builder
 WORKDIR /usr/src/p2p-service
 RUN cargo install ry  # YAML reading util, used to start the service
 RUN apt-get update && apt-get install -y protobuf-compiler

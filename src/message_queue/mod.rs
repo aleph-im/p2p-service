@@ -68,7 +68,7 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
     let pub_exchange_name = &app_config.rabbitmq.pub_exchange;
     let sub_exchange_name = &app_config.rabbitmq.sub_exchange;
 
-    let pub_queue_name = format!("{}-queue", pub_exchange_name);
+    let pub_queue_name = format!("{pub_exchange_name}-queue");
 
     channel
         .exchange_declare(
