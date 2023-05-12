@@ -51,7 +51,7 @@ impl Default for P2PConfig {
                 "/dns/api2.aleph.im/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
                     .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
             ],
-            topics: vec!["ALIVE".to_owned(), "ALEPH-QUEUE".to_owned()],
+            topics: vec!["ALIVE".to_owned(), "ALEPH-TEST".to_owned()],
             nb_api_workers: 4,
         }
     }
