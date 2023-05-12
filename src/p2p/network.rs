@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{hash_map, HashMap};
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -9,20 +9,20 @@ use futures::{
     channel::{mpsc, oneshot},
     SinkExt, StreamExt,
 };
-use libp2p::gossipsub::error::GossipsubHandlerError;
-use libp2p::gossipsub::{
-    Gossipsub, GossipsubEvent, GossipsubMessage, MessageAuthenticity, MessageId, ValidationMode,
-};
-use libp2p::multiaddr::Protocol;
 use libp2p::{
     core::upgrade,
     dns::TokioDnsConfig,
-    gossipsub, identity, mplex, noise,
-    swarm::{SwarmBuilder, SwarmEvent},
-    tcp::TokioTcpTransport,
-    Multiaddr, NetworkBehaviour, PeerId, Swarm, Transport,
+    gossipsub, identity, mplex, Multiaddr,
+    NetworkBehaviour,
+    noise,
+    PeerId, swarm::{SwarmBuilder, SwarmEvent}, Swarm, tcp::TokioTcpTransport, Transport,
 };
-use libp2p_tcp::GenTcpConfig;
+use libp2p::gossipsub::{
+    Gossipsub, GossipsubEvent, GossipsubMessage, MessageAuthenticity, MessageId, ValidationMode,
+};
+use libp2p::gossipsub::error::GossipsubHandlerError;
+use libp2p::multiaddr::Protocol;
+use libp2p::tcp::GenTcpConfig;
 use log::{debug, info};
 
 fn make_transport(
