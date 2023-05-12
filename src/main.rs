@@ -74,7 +74,7 @@ async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String
         network_client
             .subscribe(&topic)
             .await
-            .unwrap_or_else(|_| panic!("subscription to {} should succeed", topic));
+            .unwrap_or_else(|_| panic!("subscription to {topic} should succeed"));
     }
 }
 
