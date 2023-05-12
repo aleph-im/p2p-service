@@ -11,7 +11,7 @@ use libp2p::{gossipsub, identity, Multiaddr, PeerId};
 use log::{debug, error, info, warn};
 
 use crate::config::AppConfig;
-use crate::gossipsub::GossipsubMessage;
+use crate::gossipsub::Message as GossipsubMessage;
 use crate::message_queue::RabbitMqClient;
 use crate::p2p::network::P2PClient;
 
@@ -44,10 +44,10 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
     // let private_key_path = std::path::Path::new(private_key_file);
     let mut private_key_bytes =
         std::fs::read(private_key_path).expect("could not load private key file");
-    let rsa_keypair = identity::rsa::Keypair::from_pkcs8(private_key_bytes.as_mut())
+    let rsa_keypair = identity::rsa::Keypair::try_decode_pkcs8(private_key_bytes.as_mut())
         .expect("could not decode private key");
 
-    identity::Keypair::Rsa(rsa_keypair)
+    identity::Keypair::from(rsa_keypair)
 }
 
 async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr]) {

@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{hash_map, HashMap};
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -9,20 +9,23 @@ use futures::{
     channel::{mpsc, oneshot},
     SinkExt, StreamExt,
 };
-use libp2p::gossipsub::error::GossipsubHandlerError;
-use libp2p::gossipsub::{
-    Gossipsub, GossipsubEvent, GossipsubMessage, MessageAuthenticity, MessageId, ValidationMode,
-};
-use libp2p::multiaddr::Protocol;
-use libp2p::tcp::Config as GenTcpConfig;
 use libp2p::{
     core::upgrade,
     dns::TokioDnsConfig,
-    gossipsub, identity, mplex, noise,
-    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
-    tcp::tokio::Transport as TcpTransport,
-    Multiaddr, PeerId, Swarm, Transport,
+    gossipsub,
+    identity, Multiaddr,
+    noise,
+    PeerId,
+    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent}, Swarm, tcp::tokio::Transport as TcpTransport, Transport, yamux,
 };
+use libp2p_mplex;
+use libp2p::core::upgrade::SelectUpgrade;
+use libp2p::gossipsub::{
+    Behaviour as GossipsubBehaviour, Event as GossipsubEvent, Message as GossipsubMessage,
+    MessageAuthenticity, MessageId, ValidationMode,
+};
+use libp2p::multiaddr::Protocol;
+use libp2p::tcp::Config as GenTcpConfig;
 use log::{debug, info};
 
 fn make_transport(
@@ -33,14 +36,17 @@ fn make_transport(
     let dns_transport =
         TokioDnsConfig::system(tcp_transport).expect("should be able to create DNS transport");
 
-    let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
-        .into_authentic(id_keys)
-        .expect("Signing libp2p-noise static DH keypair failed.");
+    let yamux_config = yamux::Config::default();
+    // Mplex is deprecated, we just support it to communicate with older nodes.
+    let mplex_config = libp2p_mplex::MplexConfig::new();
+    let multiplex_upgrade = SelectUpgrade::new(yamux_config, mplex_config);
 
     Ok(dns_transport
         .upgrade(upgrade::Version::V1)
-        .authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
-        .multiplex(mplex::MplexConfig::new())
+        .authenticate(
+            noise::Config::new(id_keys).expect("signing libp2p-noise static DH keypair failed"),
+        )
+        .multiplex(multiplex_upgrade)
         .boxed())
 }
 
@@ -61,7 +67,7 @@ pub async fn new(
         };
 
         // Set a custom gossipsub
-        let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
+        let gossipsub_config = gossipsub::ConfigBuilder::default()
             .heartbeat_interval(Duration::from_secs(1)) // This is set to aid debugging by not cluttering the log space
             .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
             .message_id_fn(message_id_fn) // content-address messages. No two messages of the
@@ -71,8 +77,8 @@ pub async fn new(
             .expect("Valid config");
 
         // build a gossipsub network behaviour
-        let gossipsub: Gossipsub =
-            Gossipsub::new(MessageAuthenticity::Signed(id_keys), gossipsub_config)
+        let gossipsub: GossipsubBehaviour =
+            GossipsubBehaviour::new(MessageAuthenticity::Signed(id_keys), gossipsub_config)
                 .expect("Correct configuration");
 
         let behaviour = MyBehaviour { gossipsub };
@@ -94,7 +100,7 @@ pub async fn new(
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "MyBehaviourEvent")]
 struct MyBehaviour {
-    gossipsub: Gossipsub,
+    gossipsub: GossipsubBehaviour,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -277,7 +283,7 @@ impl EventLoop {
         }
     }
 
-    async fn handle_event(&mut self, event: SwarmEvent<MyBehaviourEvent, GossipsubHandlerError>) {
+    async fn handle_event(&mut self, event: SwarmEvent<MyBehaviourEvent, void::Void>) {
         match event {
             SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub_event)) => {
                 debug!("{:?}", gossipsub_event);
