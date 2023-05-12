@@ -47,9 +47,11 @@ impl Default for P2PConfig {
             clients: vec!["http".to_owned()],
             peers: vec![
                 "/dns/api1.aleph.im/tcp/4025/p2p/Qmaxufiqdyt5uVWcy1Xh2nh3Rs3382ArnSP2umjCiNG2Vs"
-                    .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
+                    .parse()
+                    .expect(PEER_MULTIADDR_ERROR_MESSAGE),
                 "/dns/api2.aleph.im/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
-                    .parse().expect(PEER_MULTIADDR_ERROR_MESSAGE),
+                    .parse()
+                    .expect(PEER_MULTIADDR_ERROR_MESSAGE),
             ],
             topics: vec!["ALIVE".to_owned(), "ALEPH-QUEUE".to_owned()],
             nb_api_workers: 4,
