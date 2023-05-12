@@ -13,23 +13,22 @@ use libp2p::{
     core::upgrade,
     dns::TokioDnsConfig,
     gossipsub, identity, mplex, Multiaddr,
-    NetworkBehaviour,
     noise,
-    PeerId, swarm::{SwarmBuilder, SwarmEvent}, Swarm, tcp::TokioTcpTransport, Transport,
+    PeerId, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent}, Swarm, tcp::tokio::Transport as TcpTransport, Transport,
 };
 use libp2p::gossipsub::{
     Gossipsub, GossipsubEvent, GossipsubMessage, MessageAuthenticity, MessageId, ValidationMode,
 };
 use libp2p::gossipsub::error::GossipsubHandlerError;
 use libp2p::multiaddr::Protocol;
-use libp2p::tcp::GenTcpConfig;
+use libp2p::tcp::Config as GenTcpConfig;
 use log::{debug, info};
 
 fn make_transport(
     id_keys: &identity::Keypair,
 ) -> std::io::Result<libp2p::core::transport::Boxed<(PeerId, libp2p::core::muxing::StreamMuxerBox)>>
 {
-    let tcp_transport = TokioTcpTransport::new(GenTcpConfig::default().nodelay(true));
+    let tcp_transport = TcpTransport::new(GenTcpConfig::default().nodelay(true));
     let dns_transport =
         TokioDnsConfig::system(tcp_transport).expect("should be able to create DNS transport");
 
@@ -77,11 +76,7 @@ pub async fn new(
 
         let behaviour = MyBehaviour { gossipsub };
 
-        SwarmBuilder::new(transport, behaviour, peer_id)
-            .executor(Box::new(|fut| {
-                tokio::spawn(fut);
-            }))
-            .build()
+        SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build()
     };
 
     let (command_sender, command_receiver) = mpsc::channel(0);
