@@ -16,8 +16,8 @@ libp2p = { version = "0.50.0", features = ["dns", "gossipsub", "macros", "mplex"
 #libp2p-tcp = { version = "0.35.0", features = ["tokio"] }
 log = "0.4.17"
 # Note: by default, the sentry package requires OpenSSL. We use rustls instead to avoid depending on system packages.
-sentry = { version = "0.27.0", features = ["log", "panic", "reqwest", "rustls"], default-features = false }
-sentry-actix = "0.27.0"
+sentry = { version = "0.31.0", features = ["log", "panic", "reqwest", "rustls"], default-features = false }
+sentry-actix = "0.31.0"
 serde = { version = "1.0.144", features = ["derive"] }
 serde_json = "1.0.85"
 serde_yaml = "0.9.11"
