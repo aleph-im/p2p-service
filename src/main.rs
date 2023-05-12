@@ -122,7 +122,7 @@ async fn p2p_to_mq_loop(mut mq_client: RabbitMqClient, mut network_events: impl 
             }
         }
     }
-    error!("Event loop stopped");
+    info!("Event loop stopped");
 }
 
 fn configure_logging() {
