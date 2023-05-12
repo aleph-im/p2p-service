@@ -1,5 +1,5 @@
-use std::fmt::{Display, Formatter};
 use actix_web::http::StatusCode;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
 pub enum EndpointError {
@@ -7,7 +7,6 @@ pub enum EndpointError {
     NotFound,
     InternalError,
 }
-
 
 impl Display for EndpointError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

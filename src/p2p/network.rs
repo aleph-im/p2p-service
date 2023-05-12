@@ -1,5 +1,5 @@
-use std::collections::{hash_map, HashMap};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map, HashMap};
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -9,19 +9,20 @@ use futures::{
     channel::{mpsc, oneshot},
     SinkExt, StreamExt,
 };
-use libp2p::{
-    core::upgrade,
-    dns::TokioDnsConfig,
-    gossipsub, identity, mplex, Multiaddr,
-    noise,
-    PeerId, swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent}, Swarm, tcp::tokio::Transport as TcpTransport, Transport,
-};
+use libp2p::gossipsub::error::GossipsubHandlerError;
 use libp2p::gossipsub::{
     Gossipsub, GossipsubEvent, GossipsubMessage, MessageAuthenticity, MessageId, ValidationMode,
 };
-use libp2p::gossipsub::error::GossipsubHandlerError;
 use libp2p::multiaddr::Protocol;
 use libp2p::tcp::Config as GenTcpConfig;
+use libp2p::{
+    core::upgrade,
+    dns::TokioDnsConfig,
+    gossipsub, identity, mplex, noise,
+    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
+    tcp::tokio::Transport as TcpTransport,
+    Multiaddr, PeerId, Swarm, Transport,
+};
 use log::{debug, info};
 
 fn make_transport(
@@ -45,7 +46,7 @@ fn make_transport(
 
 pub async fn new(
     id_keys: identity::Keypair,
-) -> Result<(P2PClient, impl StreamExt<Item=Event>, EventLoop), Box<dyn Error>> {
+) -> Result<(P2PClient, impl StreamExt<Item = Event>, EventLoop), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
     let peer_id = PeerId::from(id_keys.public());
 
@@ -113,8 +114,8 @@ impl Debug for MyBehaviourEvent {
     }
 }
 
-type CommandResponseSender<T=()> = oneshot::Sender<Result<T, Box<dyn Error + Send>>>;
-type CommandResponseReceiver<T=()> = oneshot::Receiver<Result<T, Box<dyn Error + Send>>>;
+type CommandResponseSender<T = ()> = oneshot::Sender<Result<T, Box<dyn Error + Send>>>;
+type CommandResponseReceiver<T = ()> = oneshot::Receiver<Result<T, Box<dyn Error + Send>>>;
 
 #[derive(Debug)]
 pub struct NodeInfo {
@@ -132,7 +133,6 @@ enum Command {
         peer_id: PeerId,
         peer_addr: Multiaddr,
         sender: CommandResponseSender,
-
     },
     Identify {
         sender: CommandResponseSender<NodeInfo>,
@@ -155,15 +155,23 @@ pub struct P2PClient {
 }
 
 impl P2PClient {
-    async fn send_command<TResponse>(&mut self, command: Command, receiver: CommandResponseReceiver<TResponse>) -> Result<TResponse, Box<dyn Error + Send>> {
-        self.sender.send(command).await.expect("Command receiver should not to be dropped");
+    async fn send_command<TResponse>(
+        &mut self,
+        command: Command,
+        receiver: CommandResponseReceiver<TResponse>,
+    ) -> Result<TResponse, Box<dyn Error + Send>> {
+        self.sender
+            .send(command)
+            .await
+            .expect("Command receiver should not to be dropped");
         receiver.await.expect("Sender should not be dropped")
     }
 
     /// Start listening for P2P connections from other nodes.
     pub async fn start_listening(&mut self, addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::StartListening { addr, sender }, receiver).await
+        self.send_command(Command::StartListening { addr, sender }, receiver)
+            .await
     }
 
     /// Dial a peer.
@@ -173,16 +181,21 @@ impl P2PClient {
         peer_addr: Multiaddr,
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::Dial {
-            peer_id,
-            peer_addr,
-            sender,
-        }, receiver).await
+        self.send_command(
+            Command::Dial {
+                peer_id,
+                peer_addr,
+                sender,
+            },
+            receiver,
+        )
+        .await
     }
 
     pub async fn identify(&mut self) -> Result<NodeInfo, Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::Identify {sender}, receiver).await
+        self.send_command(Command::Identify { sender }, receiver)
+            .await
     }
 
     /// Subscribe to a pubsub topic.
@@ -192,10 +205,14 @@ impl P2PClient {
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
 
-        self.send_command(Command::Subscribe {
-            topic: topic.clone(),
-            sender,
-        }, receiver).await
+        self.send_command(
+            Command::Subscribe {
+                topic: topic.clone(),
+                sender,
+            },
+            receiver,
+        )
+        .await
     }
 
     /// Publish a message on a pubsub topic.
@@ -206,11 +223,15 @@ impl P2PClient {
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
 
-        self.send_command(Command::PublishMessage {
-            topic: topic.clone(),
-            message: message.to_vec(),
-            sender,
-        }, receiver).await
+        self.send_command(
+            Command::PublishMessage {
+                topic: topic.clone(),
+                message: message.to_vec(),
+                sender,
+            },
+            receiver,
+        )
+        .await
     }
 }
 
@@ -275,7 +296,9 @@ impl EventLoop {
                             .await
                             .expect("receiver should not be dropped");
                     }
-                    gossipsub_event => { debug!("Unhandled Gossipsub event: {:?}", gossipsub_event) }
+                    gossipsub_event => {
+                        debug!("Unhandled Gossipsub event: {:?}", gossipsub_event)
+                    }
                 }
             }
             SwarmEvent::ConnectionEstablished {
@@ -339,8 +362,15 @@ impl EventLoop {
                 }
             }
             Command::Identify { sender } => {
-                let multiaddrs = self.swarm.external_addresses().map(|record| record.addr.clone()).collect();
-                let _ = sender.send(Ok(NodeInfo { peer_id: *self.swarm.local_peer_id(), multiaddrs }));
+                let multiaddrs = self
+                    .swarm
+                    .external_addresses()
+                    .map(|record| record.addr.clone())
+                    .collect();
+                let _ = sender.send(Ok(NodeInfo {
+                    peer_id: *self.swarm.local_peer_id(),
+                    multiaddrs,
+                }));
             }
             Command::Subscribe { topic, sender } => {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
@@ -352,7 +382,7 @@ impl EventLoop {
             Command::PublishMessage {
                 topic,
                 message,
-                sender
+                sender,
             } => {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, message) {
                     let _ = sender.send(Err(Box::new(e)));

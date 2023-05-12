@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use actix_web::{App, HttpServer, middleware};
 use actix_web::web::Data;
+use actix_web::{middleware, App, HttpServer};
 use clap::Parser;
 use futures::StreamExt;
 use lapin::message::Delivery;
 use lapin::options::BasicAckOptions;
-use libp2p::{gossipsub, identity, Multiaddr, PeerId};
 use libp2p::multiaddr::Protocol;
+use libp2p::{gossipsub, identity, Multiaddr, PeerId};
 use log::{debug, error, info, warn};
 
 use crate::config::AppConfig;
@@ -80,9 +80,7 @@ async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String
 
 async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery) {
     let topic = gossipsub::IdentTopic::new(delivery.routing_key.as_str());
-    let publish_result = network_client
-        .publish(&topic, &delivery.data)
-        .await;
+    let publish_result = network_client.publish(&topic, &delivery.data).await;
 
     if let Err(e) = publish_result {
         error!("Could not publish to P2P topic {}: {}", topic, e);
@@ -96,7 +94,10 @@ async fn forward_p2p_message(mq_client: &mut RabbitMqClient, message: GossipsubM
         }
         Some(peer_id) => {
             let routing_key = format!("{}.{}.{}", "p2p", message.topic, peer_id);
-            mq_client.publish(&routing_key, &message.data).await.unwrap();
+            mq_client
+                .publish(&routing_key, &message.data)
+                .await
+                .unwrap();
         }
     }
 }
@@ -105,12 +106,18 @@ async fn mq_to_p2p_loop(mut mq_client: RabbitMqClient, mut network_client: P2PCl
     while let Some(delivery) = mq_client.next().await {
         if let Ok(delivery) = delivery {
             publish_message(&mut network_client, &delivery).await;
-            delivery.ack(BasicAckOptions::default()).await.expect("RabbitMQ message ack should succeed");
+            delivery
+                .ack(BasicAckOptions::default())
+                .await
+                .expect("RabbitMQ message ack should succeed");
         }
     }
 }
 
-async fn p2p_to_mq_loop(mut mq_client: RabbitMqClient, mut network_events: impl StreamExt<Item=p2p::network::Event> + Unpin) {
+async fn p2p_to_mq_loop(
+    mut mq_client: RabbitMqClient,
+    mut network_events: impl StreamExt<Item = p2p::network::Event> + Unpin,
+) {
     while let Some(network_event) = network_events.next().await {
         match network_event {
             p2p::network::Event::PubsubMessage {
@@ -133,11 +140,15 @@ fn configure_logging() {
 }
 
 fn configure_sentry(app_config: &AppConfig) -> Option<sentry::ClientInitGuard> {
-    app_config.sentry.dsn.as_ref().map(|dsn| sentry::init((
-        dsn.clone(), sentry::ClientOptions {
-            release: sentry::release_name!(),
-            ..Default::default()
-        })))
+    app_config.sentry.dsn.as_ref().map(|dsn| {
+        sentry::init((
+            dsn.clone(),
+            sentry::ClientOptions {
+                release: sentry::release_name!(),
+                ..Default::default()
+            },
+        ))
+    })
 }
 
 pub struct AppState {
@@ -209,9 +220,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // register HTTP requests handlers
             .configure(http::config)
     })
-        .workers(app_config.p2p.nb_api_workers)
-        .bind(http_server_bind_address)
-        .expect("bind should succeed");
+    .workers(app_config.p2p.nb_api_workers)
+    .bind(http_server_bind_address)
+    .expect("bind should succeed");
 
     info!("HTTP server listening on: {:?}", http_server.addrs());
 
