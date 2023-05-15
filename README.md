@@ -1,6 +1,6 @@
-# Aleph P2P Service
+# Aleph.im P2P Service
 
-A Rust implementation of a P2P service for Aleph.im nodes.
+A P2P service for aleph.im nodes.
 
 ## Purpose
 
@@ -42,3 +42,15 @@ the peer ID and the multiaddress of the node to contact in the request body.
 ### Requesting information about the local node
 
 The `/api/p2p/identify` endpoint enables users to fetch the peer ID of the node.
+
+## FAQ
+
+### How can I create a private key?
+
+The P2P service does not create a private key automatically.
+You must create an RSA key in the PKCS8 DER binary format.
+The easiest solution is to use `openssl`:
+
+```shell
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -outform DER -nocrypt -out node-secret.pkcs8.der
+```
