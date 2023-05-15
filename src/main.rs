@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use actix_web::web::Data;
 use actix_web::{middleware, App, HttpServer};
@@ -61,9 +62,18 @@ async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr
                 continue;
             }
         };
-        match network_client.dial_and_wait(peer_id, addr).await {
-            Ok(_) => info!("Successfully dialed bootstrap peer: {}", &peer_addr),
-            Err(e) => error!("Failed to dial bootstrap peer {}: {}", peer_addr, e),
+
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            network_client.dial_and_wait(peer_id, addr),
+        )
+        .await
+        {
+            Err(_) => error!("Timed out while dialing bootstrap peer {}", peer_addr),
+            Ok(result) => match result {
+                Ok(_) => info!("Successfully dialed bootstrap peer: {}", &peer_addr),
+                Err(e) => error!("Failed to dial bootstrap peer {}: {}", peer_addr, e),
+            },
         }
     }
 }
