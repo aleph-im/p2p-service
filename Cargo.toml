@@ -12,8 +12,8 @@ clap = { version = "4.2.7", features = ["derive"] }
 env_logger = "0.10.0"
 futures = "0.3.23"
 lapin = "2.1.1"
-libp2p = { version = "0.50.0", features = ["dns", "gossipsub", "macros", "mplex", "noise", "rsa", "serde", "tcp", "tokio"] }
-#libp2p-tcp = { version = "0.35.0", features = ["tokio"] }
+libp2p = { version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "rsa", "serde", "tcp", "tokio", "yamux"] }
+libp2p-mplex = "0.39.0"
 log = "0.4.17"
 # Note: by default, the sentry package requires OpenSSL. We use rustls instead to avoid depending on system packages.
 sentry = { version = "0.31.0", features = ["log", "panic", "reqwest", "rustls"], default-features = false }
@@ -24,3 +24,4 @@ serde_yaml = "0.9.11"
 tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.9", features = ["time"] }
 tracing-subscriber = { version = "0.3.15", features = ["fmt"] }
+void = "1.0.2"
