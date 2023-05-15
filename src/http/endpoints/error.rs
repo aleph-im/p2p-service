@@ -6,6 +6,7 @@ pub enum EndpointError {
     Forbidden,
     NotFound,
     InternalError,
+    ServiceUnavailable,
 }
 
 impl Display for EndpointError {
@@ -14,6 +15,7 @@ impl Display for EndpointError {
             Self::Forbidden => "forbidden",
             Self::NotFound => "not found",
             Self::InternalError => "internal error",
+            Self::ServiceUnavailable => "service unavailable",
         };
         write!(f, "{s}")
     }
@@ -27,6 +29,7 @@ impl actix_web::ResponseError for EndpointError {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }

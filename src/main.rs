@@ -61,7 +61,7 @@ async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr
                 continue;
             }
         };
-        match network_client.dial(peer_id, addr).await {
+        match network_client.dial_and_wait(peer_id, addr).await {
             Ok(_) => info!("Successfully dialed bootstrap peer: {}", &peer_addr),
             Err(e) => error!("Failed to dial bootstrap peer {}: {}", peer_addr, e),
         }
