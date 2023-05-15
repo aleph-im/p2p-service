@@ -1,8 +1,9 @@
-use std::collections::{hash_map, HashMap};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, LinkedList};
+use std::collections::hash_map::{DefaultHasher, Entry};
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{
@@ -12,13 +13,11 @@ use futures::{
 use libp2p::{
     core::upgrade,
     dns::TokioDnsConfig,
-    gossipsub,
-    identity, Multiaddr,
+    gossipsub, identity, Multiaddr,
     noise,
     PeerId,
     swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent}, Swarm, tcp::tokio::Transport as TcpTransport, Transport, yamux,
 };
-use libp2p_mplex;
 use libp2p::core::upgrade::SelectUpgrade;
 use libp2p::gossipsub::{
     Behaviour as GossipsubBehaviour, Event as GossipsubEvent, Message as GossipsubMessage,
@@ -27,6 +26,8 @@ use libp2p::gossipsub::{
 use libp2p::multiaddr::Protocol;
 use libp2p::tcp::Config as GenTcpConfig;
 use log::{debug, info};
+
+use libp2p_mplex;
 
 fn make_transport(
     id_keys: &identity::Keypair,
@@ -161,7 +162,14 @@ pub struct P2PClient {
 }
 
 impl P2PClient {
-    async fn send_command<TResponse>(
+    async fn send_command(&mut self, command: Command) {
+        self.sender
+            .send(command)
+            .await
+            .expect("Command receiver should not to be dropped");
+    }
+
+    async fn send_command_and_wait<TResponse>(
         &mut self,
         command: Command,
         receiver: CommandResponseReceiver<TResponse>,
@@ -176,7 +184,7 @@ impl P2PClient {
     /// Start listening for P2P connections from other nodes.
     pub async fn start_listening(&mut self, addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::StartListening { addr, sender }, receiver)
+        self.send_command_and_wait(Command::StartListening { addr, sender }, receiver)
             .await
     }
 
@@ -185,9 +193,25 @@ impl P2PClient {
         &mut self,
         peer_id: PeerId,
         peer_addr: Multiaddr,
+    ) -> CommandResponseReceiver<()> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_command(Command::Dial {
+            peer_id,
+            peer_addr,
+            sender,
+        })
+        .await;
+        receiver
+    }
+
+    /// Dial a peer and wait for the operation to complete.
+    pub async fn dial_and_wait(
+        &mut self,
+        peer_id: PeerId,
+        peer_addr: Multiaddr,
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(
+        self.send_command_and_wait(
             Command::Dial {
                 peer_id,
                 peer_addr,
@@ -198,10 +222,11 @@ impl P2PClient {
         .await
     }
 
-    pub async fn identify(&mut self) -> Result<NodeInfo, Box<dyn Error + Send>> {
+    /// Get information about this node.
+    pub async fn identify(&mut self) -> CommandResponseReceiver<NodeInfo> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::Identify { sender }, receiver)
-            .await
+        self.send_command(Command::Identify { sender }).await;
+        receiver
     }
 
     /// Subscribe to a pubsub topic.
@@ -211,7 +236,7 @@ impl P2PClient {
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
 
-        self.send_command(
+        self.send_command_and_wait(
             Command::Subscribe {
                 topic: topic.clone(),
                 sender,
@@ -229,7 +254,7 @@ impl P2PClient {
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
 
-        self.send_command(
+        self.send_command_and_wait(
             Command::PublishMessage {
                 topic: topic.clone(),
                 message: message.to_vec(),
@@ -253,7 +278,7 @@ pub struct EventLoop {
     swarm: Swarm<MyBehaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
-    pending_dial: HashMap<PeerId, CommandResponseSender>,
+    pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
 }
 
 impl EventLoop {
@@ -266,7 +291,7 @@ impl EventLoop {
             swarm,
             command_receiver,
             event_sender,
-            pending_dial: Default::default(),
+            pending_dials: Default::default(),
         }
     }
 
@@ -311,16 +336,22 @@ impl EventLoop {
                 peer_id, endpoint, ..
             } => {
                 if endpoint.is_dialer() {
-                    if let Some(sender) = self.pending_dial.remove(&peer_id) {
+                    if let Some(senders) = self.pending_dials.remove(&peer_id) {
                         debug!("Successfully dialed {}", peer_id);
-                        let _ = sender.send(Ok(()));
+                        for sender in senders {
+                            let _ = sender.send(Ok(()));
+                        }
                     }
                 }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {
-                    if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        let _ = sender.send(Err(Box::new(error)));
+                    if let Some(senders) = self.pending_dials.remove(&peer_id) {
+                        debug!("Failed to dial {}", peer_id);
+                        let arced_error = Arc::new(error);
+                        for sender in senders {
+                            let _ = sender.send(Err(Box::new(arced_error.clone())));
+                        }
                     }
                 }
             }
@@ -350,23 +381,25 @@ impl EventLoop {
                 peer_id,
                 peer_addr,
                 sender,
-            } => {
-                if let hash_map::Entry::Vacant(e) = self.pending_dial.entry(peer_id) {
+            } => match self.pending_dials.entry(peer_id) {
+                Entry::Occupied(mut entry) => {
+                    let senders = entry.get_mut();
+                    senders.push_back(sender);
+                }
+                Entry::Vacant(entry) => {
                     match self
                         .swarm
                         .dial(peer_addr.with(Protocol::P2p(peer_id.into())))
                     {
                         Ok(()) => {
-                            e.insert(sender);
+                            entry.insert(LinkedList::from([sender]));
                         }
                         Err(e) => {
                             let _ = sender.send(Err(Box::new(e)));
                         }
                     }
-                } else {
-                    todo!("Already dialing peer.");
                 }
-            }
+            },
             Command::Identify { sender } => {
                 let multiaddrs = self
                     .swarm

@@ -1,11 +1,13 @@
-use actix_web::{web, HttpResponse, Responder};
-use libp2p::swarm::DialError;
+use std::sync::Arc;
+
+use actix_web::{HttpResponse, Responder, web};
 use libp2p::{Multiaddr, PeerId};
+use libp2p::swarm::DialError;
 use log::{error, warn};
 use serde::Deserialize;
 
-use crate::http::endpoints::error::EndpointError;
 use crate::AppState;
+use crate::http::endpoints::error::EndpointError;
 
 #[derive(Deserialize, Debug)]
 pub struct DialRequest {
@@ -16,10 +18,10 @@ pub struct DialRequest {
 fn handle_dial_error(
     error: Box<dyn std::error::Error + Send>,
     peer_id: PeerId,
-    multiaddr: Multiaddr,
+    multiaddr: &Multiaddr,
 ) -> EndpointError {
-    if let Some(dial_error) = error.downcast_ref::<DialError>() {
-        match dial_error {
+    if let Some(dial_error) = error.downcast_ref::<Arc<DialError>>() {
+        match dial_error.as_ref() {
             DialError::WrongPeerId {
                 obtained,
                 endpoint: _,
@@ -52,11 +54,16 @@ pub async fn dial(
     dial_request: web::Json<DialRequest>,
 ) -> Result<impl Responder, actix_web::Error> {
     let DialRequest { peer_id, multiaddr } = dial_request.0;
-    let mut p2p_client = app_state.p2p_client.lock().await;
-    p2p_client
-        .dial(peer_id, multiaddr.clone())
+
+    let receiver = {
+        let mut p2p_client = app_state.p2p_client.lock().await;
+        p2p_client.dial(peer_id, multiaddr.clone()).await
+    };
+
+    receiver
         .await
-        .map_err(|e| handle_dial_error(e, peer_id, multiaddr))?;
+        .map_err(|_canceled| EndpointError::ServiceUnavailable)?
+        .map_err(|dial_error| handle_dial_error(dial_error, peer_id, &multiaddr))?;
 
     Ok(HttpResponse::Ok())
 }
