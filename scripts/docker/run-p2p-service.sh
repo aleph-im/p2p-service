@@ -36,7 +36,7 @@ RABBITMQ_HOST=$(get_config rabbitmq.host)
 RABBITMQ_PORT=$(get_config rabbitmq.port)
 
 # Set default values if connection options are not specified in the config file
-if [ -z "${RABBITMQ_HOST}" ]; then RABBITMQ_HOST="127.0.0.1"; fi
+if [ -z "${RABBITMQ_HOST}" ]; then RABBITMQ_HOST="rabbitmq"; fi
 if [ -z "${RABBITMQ_PORT}" ]; then RABBITMQ_HOST="5672"; fi
 
 wait_for_it -h "${RABBITMQ_HOST}" -p "${RABBITMQ_PORT}"
