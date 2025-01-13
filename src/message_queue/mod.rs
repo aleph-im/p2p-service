@@ -10,6 +10,9 @@ use lapin::{BasicProperties, Channel, Consumer};
 use lapin::{Connection, ConnectionProperties, ExchangeKind};
 
 use crate::config::AppConfig;
+use log::{info, warn, error};
+use std::time::Duration;
+use std::process::exit;
 
 /// A client for the exchanges we create in RabbitMQ. The client abstracts two exchanges:
 /// 1. A queue where other processes on the node publish messages to be sent to the P2P network
@@ -60,9 +63,22 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
     // Create exchange
     let addr = make_amqp_uri(app_config);
 
-    let conn = Connection::connect(&addr, ConnectionProperties::default())
-        .await
-        .expect("RabbitMQ connection should be created");
+    let conn = loop {
+        match Connection::connect(&addr, ConnectionProperties::default()).await {
+            Ok(conn) => break conn,
+            Err(e) => {
+                warn!("RabbitMQ: Connection failed {}", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                info!("RabbitMq: Retrying connection...");
+            }
+        }
+    };
+
+    conn.on_error(|err| {
+        error!("RabbitMQ: {}", err);
+        exit(1);
+    });
+
     let channel = conn.create_channel().await.unwrap();
 
     let pub_exchange_name = &app_config.rabbitmq.pub_exchange;
