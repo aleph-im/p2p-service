@@ -74,6 +74,8 @@ pub async fn new(
             .message_id_fn(message_id_fn) // content-address messages. No two messages of the
             // same content will be propagated.
             .max_transmit_size(262144) // Inline messages can be quite large, up to over 200KB.
+            .max_messages_per_rpc(Some(100))
+            .duplicate_cache_time(Duration::from_secs(1800))
             .build()
             .expect("Valid config");
 
