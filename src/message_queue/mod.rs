@@ -23,7 +23,6 @@ use std::process::exit;
 pub struct RabbitMqClient {
     channel: Channel,
     pub_consumer: Consumer,
-    pub pub_exchange: String,
     pub sub_exchange: String,
 }
 
@@ -139,7 +138,6 @@ pub async fn new(app_config: &AppConfig) -> Result<RabbitMqClient, Box<dyn std::
     Ok(RabbitMqClient {
         channel,
         pub_consumer,
-        pub_exchange: pub_exchange_name.to_owned(),
         sub_exchange: sub_exchange_name.to_owned(),
     })
 }

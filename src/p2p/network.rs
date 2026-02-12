@@ -276,8 +276,8 @@ impl P2PClient {
 
 pub enum Event {
     PubsubMessage {
-        propagation_source: PeerId,
-        message_id: MessageId,
+        _propagation_source: PeerId,
+        _message_id: MessageId,
         message: GossipsubMessage,
     },
 }
@@ -331,8 +331,8 @@ impl EventLoop {
                     } => {
                         self.event_sender
                             .send(Event::PubsubMessage {
-                                propagation_source,
-                                message_id,
+                                _propagation_source: propagation_source,
+                                _message_id: message_id,
                                 message,
                             })
                             .await

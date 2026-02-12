@@ -164,9 +164,7 @@ async fn p2p_to_mq_loop(
     while let Some(network_event) = network_events.next().await {
         match network_event {
             p2p::network::Event::PubsubMessage {
-                propagation_source: _,
-                message_id: _,
-                message,
+                message, ..
             } => {
                 forward_p2p_message(&mut mq_client, message, &metrics).await;
             }
