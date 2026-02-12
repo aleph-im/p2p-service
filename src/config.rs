@@ -49,7 +49,7 @@ impl Default for P2PConfig {
                 "/dns/api2.aleph.im/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
                     .parse()
                     .expect(PEER_MULTIADDR_ERROR_MESSAGE),
-                "/dns/api3.aleph.im/tcp/4025/p2p/Qmb5b2ZwJm9pVWrppf3D3iMF1bXbjZhbJTwGvKEBMZNxa2",
+                "/dns/api3.aleph.im/tcp/4025/p2p/Qmb5b2ZwJm9pVWrppf3D3iMF1bXbjZhbJTwGvKEBMZNxa2"
                     .parse()
                     .expect(PEER_MULTIADDR_ERROR_MESSAGE),
             ],

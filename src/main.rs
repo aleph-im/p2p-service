@@ -14,12 +14,16 @@ use log::{debug, error, info, warn};
 use crate::config::AppConfig;
 use crate::gossipsub::Message as GossipsubMessage;
 use crate::message_queue::RabbitMqClient;
+use crate::metrics::Metrics;
 use crate::p2p::network::P2PClient;
 
 mod config;
 mod http;
 mod message_queue;
+mod metrics;
 mod p2p;
+use serde_json::{Value};
+use std::str;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -34,8 +38,10 @@ struct CliArgs {
 }
 
 fn read_config(config_file: &PathBuf) -> AppConfig {
-    let f = std::fs::File::open(config_file).expect("could not open config.yml");
-    serde_yaml::from_reader(&f).expect("invalid YAML content")
+    let f = std::fs::File::open(config_file)
+        .unwrap_or_else(|e| panic!("Could not open config file {:?}: {}", config_file, e));
+    serde_yaml::from_reader(&f)
+        .unwrap_or_else(|e| panic!("Invalid YAML content in {:?}: {}", config_file, e))
 }
 
 fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
@@ -43,10 +49,10 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
     // openssl pkcs8 -topk8 -inform PEM -outform DER -in node-secret.key -out node-secret.pkcs8.der -nocrypt
 
     // let private_key_path = std::path::Path::new(private_key_file);
-    let mut private_key_bytes =
-        std::fs::read(private_key_path).expect("could not load private key file");
+    let mut private_key_bytes = std::fs::read(private_key_path)
+        .unwrap_or_else(|e| panic!("Could not load private key file {:?}: {}", private_key_path, e));
     let rsa_keypair = identity::rsa::Keypair::try_decode_pkcs8(private_key_bytes.as_mut())
-        .expect("could not decode private key");
+        .unwrap_or_else(|e| panic!("Could not decode private key from {:?}: {}", private_key_path, e));
 
     identity::Keypair::from(rsa_keypair)
 }
@@ -80,6 +86,7 @@ async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr
 
 async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String>) {
     for topic in topics {
+        info!("Subscribing to topic: {}", topic);
         let topic = gossipsub::IdentTopic::new(topic);
         network_client
             .subscribe(&topic)
@@ -88,38 +95,63 @@ async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String
     }
 }
 
-async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery) {
+async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery, metrics: &Metrics) {
     let topic = gossipsub::IdentTopic::new(delivery.routing_key.as_str());
-    let publish_result = network_client.publish(&topic, &delivery.data).await;
-
-    if let Err(e) = publish_result {
-        error!("Could not publish to P2P topic {}: {}", topic, e);
+    info!("Publishing message on topic: {}", topic);
+    match network_client.publish(&topic, &delivery.data).await {
+        Ok(_) => {
+            metrics.total_messages_sent.inc();
+            metrics.increment_event("message_published");
+        }
+        Err(e) => {
+            error!("Could not publish to P2P topic {}: {}", topic, e);
+            metrics.increment_event("publish_error");
+        }
     }
 }
 
-async fn forward_p2p_message(mq_client: &mut RabbitMqClient, message: GossipsubMessage) {
+async fn forward_p2p_message(mq_client: &mut RabbitMqClient, message: GossipsubMessage, metrics: &Metrics) {
     match message.source {
         None => {
             warn!("Received pubsub message from an unspecified sender. Discarding.");
         }
         Some(peer_id) => {
             let routing_key = format!("{}.{}.{}", "p2p", message.topic, peer_id);
-            mq_client
-                .publish(&routing_key, &message.data)
-                .await
-                .unwrap();
+
+            let item_hash = str::from_utf8(&message.data)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .and_then(|v| v.get("item_hash").and_then(|h| h.as_str().map(String::from)));
+
+            info!(
+                "Forwarding p2p message from peer_id: {} on topic: {} routing_key: {} item_hash: {}",
+                &peer_id,
+                &message.topic,
+                &routing_key,
+                item_hash.as_deref().unwrap_or("N/A")
+            );
+
+            match mq_client.publish(&routing_key, &message.data).await {
+                Ok(_) => {
+                    metrics.total_messages_received.inc();
+                    metrics.increment_event("message_forwarded");
+                }
+                Err(e) => {
+                    error!("Failed to forward message to RabbitMQ: {}", e);
+                    metrics.increment_event("forward_error");
+                }
+            }
         }
     }
 }
 
-async fn mq_to_p2p_loop(mut mq_client: RabbitMqClient, mut network_client: P2PClient) {
+async fn mq_to_p2p_loop(mut mq_client: RabbitMqClient, mut network_client: P2PClient, metrics: Metrics) {
     while let Some(delivery) = mq_client.next().await {
         if let Ok(delivery) = delivery {
-            publish_message(&mut network_client, &delivery).await;
-            delivery
-                .ack(BasicAckOptions::default())
-                .await
-                .expect("RabbitMQ message ack should succeed");
+            publish_message(&mut network_client, &delivery, &metrics).await;
+            if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
+                error!("Failed to acknowledge RabbitMQ message: {}", e);
+            }
         }
     }
 }
@@ -127,15 +159,14 @@ async fn mq_to_p2p_loop(mut mq_client: RabbitMqClient, mut network_client: P2PCl
 async fn p2p_to_mq_loop(
     mut mq_client: RabbitMqClient,
     mut network_events: impl StreamExt<Item = p2p::network::Event> + Unpin,
+    metrics: Metrics,
 ) {
     while let Some(network_event) = network_events.next().await {
         match network_event {
             p2p::network::Event::PubsubMessage {
-                propagation_source: _,
-                message_id: _,
-                message,
+                message, ..
             } => {
-                forward_p2p_message(&mut mq_client, message).await;
+                forward_p2p_message(&mut mq_client, message, &metrics).await;
             }
         }
     }
@@ -145,7 +176,9 @@ async fn p2p_to_mq_loop(
 fn configure_logging() {
     let mut log_builder = env_logger::builder();
     let logger = sentry::integrations::log::SentryLogger::with_dest(log_builder.build());
-    log::set_boxed_logger(Box::new(logger)).expect("setting global logger should succeed");
+    if let Err(e) = log::set_boxed_logger(Box::new(logger)) {
+        eprintln!("Failed to set global logger: {}", e);
+    }
     log::set_max_level(log::LevelFilter::Info);
 }
 
@@ -165,6 +198,7 @@ pub struct AppState {
     pub app_config: AppConfig,
     pub p2p_client: tokio::sync::Mutex<P2PClient>,
     pub peer_id: PeerId,
+    pub metrics: Metrics,
 }
 
 #[actix_web::main]
@@ -183,8 +217,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_id = PeerId::from(id_keys.public());
     info!("Peer ID: {:?}", peer_id);
 
+    let metrics = Metrics::new();
+
     let (mut network_client, network_events, network_event_loop) =
-        p2p::network::new(id_keys).await?;
+        p2p::network::new(id_keys, metrics.connected_peers.clone()).await?;
 
     // Spawn the network task and run it in the background.
     let p2p_event_loop_handle = tokio::spawn(network_event_loop.run());
@@ -211,13 +247,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
 
-    let mq_to_p2p_handle = tokio::spawn(mq_to_p2p_loop(mq_client.clone(), network_client.clone()));
-    let p2p_to_mq_handle = tokio::spawn(p2p_to_mq_loop(mq_client, network_events));
+    let mq_to_p2p_handle = tokio::spawn(mq_to_p2p_loop(mq_client.clone(), network_client.clone(), metrics.clone()));
+    let p2p_to_mq_handle = tokio::spawn(p2p_to_mq_loop(mq_client, network_events, metrics.clone()));
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
         p2p_client: tokio::sync::Mutex::new(network_client.clone()),
         peer_id,
+        metrics: metrics.clone(),
     });
 
     let http_server_bind_address = format!("0.0.0.0:{}", &app_config.p2p.control_port.0);
