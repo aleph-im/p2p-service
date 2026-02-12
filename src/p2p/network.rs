@@ -16,7 +16,10 @@ use libp2p::{
     gossipsub, identity, Multiaddr,
     noise,
     PeerId,
-    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent}, Swarm, tcp::tokio::Transport as TcpTransport, Transport, yamux,
+    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
+    Swarm,
+    tcp::tokio::Transport as TcpTransport, Transport,
+    yamux,
 };
 use libp2p::core::upgrade::SelectUpgrade;
 use libp2p::gossipsub::{
@@ -26,6 +29,7 @@ use libp2p::gossipsub::{
 use libp2p::multiaddr::Protocol;
 use libp2p::tcp::Config as GenTcpConfig;
 use log::{debug, info};
+use prometheus_client::metrics::gauge::Gauge;
 
 use libp2p_mplex;
 
@@ -53,6 +57,7 @@ fn make_transport(
 
 pub async fn new(
     id_keys: identity::Keypair,
+    connected_peers: Gauge,
 ) -> Result<(P2PClient, impl StreamExt<Item = Event>, EventLoop), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
     let peer_id = PeerId::from(id_keys.public());
@@ -86,7 +91,8 @@ pub async fn new(
 
         let behaviour = MyBehaviour { gossipsub };
 
-        SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build()
+        SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id)
+            .build()
     };
 
     let (command_sender, command_receiver) = mpsc::channel(0);
@@ -96,7 +102,7 @@ pub async fn new(
             sender: command_sender,
         },
         event_receiver,
-        EventLoop::new(swarm, command_receiver, event_sender),
+        EventLoop::new(swarm, command_receiver, event_sender, connected_peers),
     ))
 }
 
@@ -281,6 +287,7 @@ pub struct EventLoop {
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
     pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
+    connected_peers: Gauge,
 }
 
 impl EventLoop {
@@ -288,12 +295,14 @@ impl EventLoop {
         swarm: Swarm<MyBehaviour>,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<Event>,
+        connected_peers: Gauge,
     ) -> Self {
         Self {
             swarm,
             command_receiver,
             event_sender,
             pending_dials: Default::default(),
+            connected_peers,
         }
     }
 
@@ -337,6 +346,7 @@ impl EventLoop {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
+                self.connected_peers.inc();
                 if endpoint.is_dialer() {
                     if let Some(senders) = self.pending_dials.remove(&peer_id) {
                         debug!("Successfully dialed {}", peer_id);
@@ -345,6 +355,9 @@ impl EventLoop {
                         }
                     }
                 }
+            }
+            SwarmEvent::ConnectionClosed { .. } => {
+                self.connected_peers.dec();
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {
