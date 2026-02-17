@@ -9,5 +9,7 @@ pub fn config(cfg: &mut web::ServiceConfig) {
                 .route("/identify", web::get().to(endpoints::identity::identify))
                 .route("/dial", web::post().to(endpoints::dial::dial)),
         ),
-    );
+    )
+    .route("/metrics", web::get().to(endpoints::metrics))
+    .route("/health", web::get().to(endpoints::health));
 }
