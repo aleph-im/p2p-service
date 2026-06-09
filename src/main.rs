@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix_web::web::Data;
@@ -16,10 +17,8 @@ use aleph_p2p_service::http::AppState;
 use aleph_p2p_service::message_queue::{self, RabbitMqClient};
 use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::P2PClient;
+use aleph_p2p_service::subscriptions::Subscriptions;
 use aleph_p2p_service::{http, p2p};
-use libp2p::gossipsub::Message as GossipsubMessage;
-use serde_json::Value;
-use std::str;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -119,48 +118,6 @@ async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery, me
     }
 }
 
-async fn forward_p2p_message(
-    mq_client: &mut RabbitMqClient,
-    message: GossipsubMessage,
-    metrics: &Metrics,
-) {
-    match message.source {
-        None => {
-            warn!("Received pubsub message from an unspecified sender. Discarding.");
-        }
-        Some(peer_id) => {
-            let routing_key = format!("{}.{}.{}", "p2p", message.topic, peer_id);
-
-            let item_hash = str::from_utf8(&message.data)
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                .and_then(|v| {
-                    v.get("item_hash")
-                        .and_then(|h| h.as_str().map(String::from))
-                });
-
-            info!(
-                "Forwarding p2p message from peer_id: {} on topic: {} routing_key: {} item_hash: {}",
-                &peer_id,
-                &message.topic,
-                &routing_key,
-                item_hash.as_deref().unwrap_or("N/A")
-            );
-
-            match mq_client.publish(&routing_key, &message.data).await {
-                Ok(_) => {
-                    metrics.total_messages_received.inc();
-                    metrics.increment_event("message_forwarded");
-                }
-                Err(e) => {
-                    error!("Failed to forward message to RabbitMQ: {}", e);
-                    metrics.increment_event("forward_error");
-                }
-            }
-        }
-    }
-}
-
 async fn mq_to_p2p_loop(
     mut mq_client: RabbitMqClient,
     mut network_client: P2PClient,
@@ -178,17 +135,46 @@ async fn mq_to_p2p_loop(
 
 async fn p2p_to_mq_loop(
     mut mq_client: RabbitMqClient,
-    mut network_events: impl StreamExt<Item = p2p::network::Event> + Unpin,
+    subscriptions: Arc<Subscriptions>,
+    topics: Vec<String>,
     metrics: Metrics,
 ) {
-    while let Some(network_event) = network_events.next().await {
-        match network_event {
-            p2p::network::Event::PubsubMessage { message } => {
-                forward_p2p_message(&mut mq_client, message, &metrics).await;
+    let streams: Vec<_> = topics
+        .iter()
+        .map(|topic| subscriptions.subscribe(topic))
+        .collect();
+    let mut tasks = futures::stream::select_all(streams.into_iter().map(|rx| {
+        Box::pin(futures::stream::unfold(rx, |mut rx| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(envelope) => return Some((envelope, rx)),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("MQ bridge lagged, dropped {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        }))
+    }));
+
+    while let Some(envelope) = tasks.next().await {
+        let routing_key = format!("p2p.{}.{}", envelope.topic, envelope.source_peer_id);
+        info!(
+            "Forwarding p2p message from peer_id: {} on topic: {} routing_key: {}",
+            envelope.source_peer_id, envelope.topic, routing_key,
+        );
+        match mq_client.publish(&routing_key, &envelope.data).await {
+            Ok(_) => {
+                metrics.total_messages_received.inc();
+                metrics.increment_event("message_forwarded");
+            }
+            Err(e) => {
+                error!("Failed to forward message to RabbitMQ: {}", e);
+                metrics.increment_event("forward_error");
             }
         }
     }
-    info!("Event loop stopped");
+    info!("p2p_to_mq_loop stopped");
 }
 
 fn configure_logging() {
@@ -230,8 +216,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let metrics = Metrics::new();
 
-    let (mut network_client, network_events, network_event_loop) =
-        p2p::network::new(id_keys, metrics.connected_peers.clone()).await?;
+    let subscriptions = Arc::new(Subscriptions::new(1024));
+
+    let (mut network_client, network_event_loop) = p2p::network::new(
+        id_keys,
+        metrics.connected_peers.clone(),
+        subscriptions.clone(),
+    )
+    .await?;
 
     // Spawn the network task and run it in the background.
     let p2p_event_loop_handle = tokio::spawn(network_event_loop.run());
@@ -263,7 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         network_client.clone(),
         metrics.clone(),
     ));
-    let p2p_to_mq_handle = tokio::spawn(p2p_to_mq_loop(mq_client, network_events, metrics.clone()));
+    let p2p_to_mq_handle = tokio::spawn(p2p_to_mq_loop(
+        mq_client,
+        subscriptions.clone(),
+        app_config.p2p.topics.clone(),
+        metrics.clone(),
+    ));
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),

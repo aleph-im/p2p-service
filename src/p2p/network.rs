@@ -19,6 +19,8 @@ use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 use prometheus_client::metrics::gauge::Gauge;
 
+use crate::subscriptions::{now_millis, Envelope, Subscriptions};
+
 /// Free-form protocol_version string exchanged in identify payloads;
 /// not the identify wire protocol name.
 pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
@@ -51,7 +53,8 @@ fn make_gossipsub_config() -> gossipsub::Config {
 pub async fn new(
     id_keys: identity::Keypair,
     connected_peers: Gauge,
-) -> Result<(P2PClient, impl StreamExt<Item = Event>, EventLoop), Box<dyn Error>> {
+    subscriptions: Arc<Subscriptions>,
+) -> Result<(P2PClient, EventLoop), Box<dyn Error>> {
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
         .with_tcp(
@@ -82,13 +85,11 @@ pub async fn new(
         .build();
 
     let (command_sender, command_receiver) = mpsc::channel(0);
-    let (event_sender, event_receiver) = mpsc::channel(0);
     Ok((
         P2PClient {
             sender: command_sender,
         },
-        event_receiver,
-        EventLoop::new(swarm, command_receiver, event_sender, connected_peers),
+        EventLoop::new(swarm, command_receiver, subscriptions, connected_peers),
     ))
 }
 
@@ -220,14 +221,10 @@ impl P2PClient {
     }
 }
 
-pub enum Event {
-    PubsubMessage { message: GossipsubMessage },
-}
-
 pub struct EventLoop {
     swarm: Swarm<Behaviour>,
     command_receiver: mpsc::Receiver<Command>,
-    event_sender: mpsc::Sender<Event>,
+    subscriptions: Arc<Subscriptions>,
     pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
     connected_peers: Gauge,
 }
@@ -236,13 +233,13 @@ impl EventLoop {
     fn new(
         swarm: Swarm<Behaviour>,
         command_receiver: mpsc::Receiver<Command>,
-        event_sender: mpsc::Sender<Event>,
+        subscriptions: Arc<Subscriptions>,
         connected_peers: Gauge,
     ) -> Self {
         Self {
             swarm,
             command_receiver,
-            event_sender,
+            subscriptions,
             pending_dials: Default::default(),
             connected_peers,
         }
@@ -266,16 +263,21 @@ impl EventLoop {
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(GossipsubEvent::Message {
                 message,
                 ..
-            })) => {
-                if self
-                    .event_sender
-                    .send(Event::PubsubMessage { message })
-                    .await
-                    .is_err()
-                {
-                    warn!("Pubsub event receiver dropped; discarding message");
+            })) => match message.source {
+                None => warn!("Received pubsub message without source; discarding"),
+                Some(source) => {
+                    let receivers = self.subscriptions.publish(Envelope {
+                        topic: message.topic.to_string(),
+                        source_peer_id: source.to_string(),
+                        data: message.data,
+                        received_at_millis: now_millis(),
+                    });
+                    debug!(
+                        "Forwarded pubsub message to {} local subscribers",
+                        receivers
+                    );
                 }
-            }
+            },
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(other)) => {
                 debug!("Unhandled gossipsub event: {:?}", other);
             }

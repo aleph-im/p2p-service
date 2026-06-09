@@ -1,10 +1,12 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Duration;
 
 use prometheus_client::metrics::gauge::Gauge;
 
 use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::subscriptions::Subscriptions;
 
 /// Old-stack (libp2p 0.51) swarm with the exact production parameters of v0.1.x.
 fn make_old_swarm() -> libp2p_old::Swarm<libp2p_old::gossipsub::Behaviour> {
@@ -57,9 +59,11 @@ async fn new_node_interops_with_libp2p_0_51_node() {
     let topic_name = "interop-test";
 
     // New node.
-    let (mut new_client, mut new_events, new_loop) = network::new(
+    let subscriptions = Arc::new(Subscriptions::new(1024));
+    let (mut new_client, new_loop) = network::new(
         libp2p::identity::Keypair::generate_ed25519(),
         Gauge::default(),
+        subscriptions.clone(),
     )
     .await
     .unwrap();
@@ -84,6 +88,9 @@ async fn new_node_interops_with_libp2p_0_51_node() {
         .subscribe(&libp2p::gossipsub::IdentTopic::new(topic_name))
         .await
         .unwrap();
+
+    // Subscribe BEFORE dialing so no messages are missed.
+    let mut rx = subscriptions.subscribe(topic_name);
 
     // Old node.
     let mut old_swarm = make_old_swarm();
@@ -110,9 +117,16 @@ async fn new_node_interops_with_libp2p_0_51_node() {
                     old_received = Some(message.data);
                 }
             }
-            maybe_event = new_events.next(), if published_old_to_new => {
-                if let Some(network::Event::PubsubMessage { message }) = maybe_event {
-                    new_received = Some(message.data);
+            result = rx.recv(), if published_old_to_new => {
+                match result {
+                    Ok(envelope) => {
+                        new_received = Some(envelope.data.to_vec());
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Lagged: some messages dropped, keep waiting.
+                        let _ = n;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             _ = &mut graft_wait, if !published_old_to_new => {
