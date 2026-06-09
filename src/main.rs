@@ -18,6 +18,7 @@ use crate::metrics::Metrics;
 use crate::p2p::network::P2PClient;
 
 mod config;
+mod grpc;
 mod http;
 mod message_queue;
 mod metrics;

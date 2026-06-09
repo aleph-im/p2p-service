@@ -27,3 +27,14 @@ tokio-stream = { version = "0.1.17", features = ["time"] }
 tracing-subscriber = { version = "0.3.19", features = ["fmt"] }
 prometheus-client = { version = "0.23.0" }
 void = "1.0.2"
+tonic = "0.12"
+prost = "0.13"
+async-stream = "0.3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[patch.crates-io]
+# core2 0.4.0 is yanked from crates.io; pin to a committed copy so the build works
+# without needing a pre-populated registry cache.
+core2 = { path = "patches/core2-0.4.0" }
