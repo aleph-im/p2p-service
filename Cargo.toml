@@ -30,6 +30,11 @@ tonic = "0.12"
 prost = "0.13"
 async-stream = "0.3"
 
+[dev-dependencies]
+# Old libp2p stack used by deployed nodes; kept as a dev-dependency to prove
+# gossipsub wire compatibility in tests/interop_old_libp2p.rs.
+libp2p-old = { package = "libp2p", version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "tcp", "tokio", "yamux"] }
+
 [build-dependencies]
 tonic-build = "0.12"
 
