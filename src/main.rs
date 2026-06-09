@@ -11,13 +11,15 @@ use lapin::options::BasicAckOptions;
 use libp2p::multiaddr::Protocol;
 use libp2p::{gossipsub, identity, Multiaddr, PeerId};
 use log::{debug, error, info, warn};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
 use aleph_p2p_service::config::AppConfig;
 use aleph_p2p_service::http::AppState;
 use aleph_p2p_service::message_queue::{self, RabbitMqClient};
 use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::P2PClient;
-use aleph_p2p_service::subscriptions::Subscriptions;
+use aleph_p2p_service::subscriptions::{Envelope, Subscriptions};
 use aleph_p2p_service::{http, p2p};
 
 #[derive(Parser, Debug)]
@@ -135,27 +137,28 @@ async fn mq_to_p2p_loop(
 
 async fn p2p_to_mq_loop(
     mut mq_client: RabbitMqClient,
-    subscriptions: Arc<Subscriptions>,
-    topics: Vec<String>,
+    topic_receivers: Vec<(String, broadcast::Receiver<Arc<Envelope>>)>,
     metrics: Metrics,
 ) {
-    let streams: Vec<_> = topics
-        .iter()
-        .map(|topic| subscriptions.subscribe(topic))
-        .collect();
-    let mut tasks = futures::stream::select_all(streams.into_iter().map(|rx| {
-        Box::pin(futures::stream::unfold(rx, |mut rx| async move {
-            loop {
-                match rx.recv().await {
-                    Ok(envelope) => return Some((envelope, rx)),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("MQ bridge lagged, dropped {} messages", n);
+    let streams = topic_receivers.into_iter().map(|(topic, rx)| {
+        let stream = BroadcastStream::new(rx);
+        Box::pin(stream.filter_map(move |item| {
+            let topic = topic.clone();
+            async move {
+                match item {
+                    Ok(envelope) => Some(envelope),
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                        warn!(
+                            "MQ bridge lagged on topic {}, dropped {} messages",
+                            topic, n
+                        );
+                        None
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
             }
         }))
-    }));
+    });
+    let mut tasks = futures::stream::select_all(streams);
 
     while let Some(envelope) = tasks.next().await {
         let routing_key = format!("p2p.{}.{}", envelope.topic, envelope.source_peer_id);
@@ -244,8 +247,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Dial bootstrap peers
     dial_bootstrap_peers(&mut network_client, &app_config.p2p.peers).await;
 
+    // Dedup topics (preserve order, discard duplicates).
+    let topics: Vec<String> = {
+        let mut seen = Vec::new();
+        for t in &app_config.p2p.topics {
+            if !seen.contains(t) {
+                seen.push(t.clone());
+            }
+        }
+        seen
+    };
+
+    // Create per-topic broadcast receivers BEFORE subscribing to gossipsub so that
+    // no messages arriving between the subscribe call and the loop start are dropped.
+    let topic_receivers: Vec<(String, _)> = topics
+        .iter()
+        .map(|t| (t.clone(), subscriptions.subscribe(t)))
+        .collect();
+
     // Subscribe to topics
-    subscribe_to_topics(&mut network_client, &app_config.p2p.topics).await?;
+    subscribe_to_topics(&mut network_client, &topics).await?;
 
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
@@ -255,12 +276,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         network_client.clone(),
         metrics.clone(),
     ));
-    let p2p_to_mq_handle = tokio::spawn(p2p_to_mq_loop(
-        mq_client,
-        subscriptions.clone(),
-        app_config.p2p.topics.clone(),
-        metrics.clone(),
-    ));
+    let p2p_to_mq_handle =
+        tokio::spawn(p2p_to_mq_loop(mq_client, topic_receivers, metrics.clone()));
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),

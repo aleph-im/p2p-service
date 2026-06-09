@@ -32,6 +32,10 @@ pub struct Behaviour {
 }
 
 fn make_gossipsub_config() -> gossipsub::Config {
+    // NOTE: topic-key coupling -- the Subscriptions registry is keyed by the human-readable topic
+    // name, which matches `message.topic.to_string()` only because topic hashing is not enabled;
+    // enabling `.hash_topics()` would break the fanout keying.
+
     // To content-address messages, we take the hash of the message and use it as an ID.
     let message_id_fn = |message: &GossipsubMessage| {
         let mut s = DefaultHasher::new();
