@@ -60,10 +60,9 @@ pub async fn dial(
 ) -> Result<impl Responder, actix_web::Error> {
     let DialRequest { peer_id, multiaddr } = dial_request.0;
 
-    // Clone the client (a cheap channel handle) so the lock is not held for
-    // the whole duration of the dial.
-    let mut p2p_client = app_state.p2p_client.lock().await.clone();
-    p2p_client
+    // The client is a cheap channel handle; clone it for this request.
+    let mut client = app_state.p2p_client.clone();
+    client
         .dial_and_wait(peer_id, multiaddr.clone())
         .await
         .map_err(|dial_error| handle_dial_error(dial_error, peer_id, &multiaddr))?;

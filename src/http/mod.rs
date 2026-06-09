@@ -9,7 +9,7 @@ pub mod endpoints;
 
 pub struct AppState {
     pub app_config: AppConfig,
-    pub p2p_client: tokio::sync::Mutex<P2PClient>,
+    pub p2p_client: P2PClient,
     pub peer_id: PeerId,
     pub metrics: Metrics,
 }

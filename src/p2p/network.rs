@@ -14,17 +14,19 @@ use libp2p::gossipsub::{
 use libp2p::identify;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
-use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 use prometheus_client::metrics::gauge::Gauge;
 
-pub const IDENTIFY_PROTOCOL: &str = "/aleph/id/1.0.0";
+/// Free-form protocol_version string exchanged in identify payloads;
+/// not the identify wire protocol name.
+pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
-    pub gossipsub: GossipsubBehaviour,
-    pub identify: identify::Behaviour,
+    gossipsub: GossipsubBehaviour,
+    identify: identify::Behaviour,
 }
 
 fn make_gossipsub_config() -> gossipsub::Config {
@@ -66,7 +68,7 @@ pub async fn new(
             )
             .expect("static gossipsub behaviour config should be valid");
             let identify = identify::Behaviour::new(
-                identify::Config::new(IDENTIFY_PROTOCOL.to_string(), key.public())
+                identify::Config::new(IDENTIFY_PROTOCOL_VERSION.to_string(), key.public())
                     .with_agent_version(format!("aleph-p2p-service/{}", env!("CARGO_PKG_VERSION"))),
             );
             Behaviour {
@@ -343,6 +345,8 @@ impl EventLoop {
                 sender,
             } => match self.pending_dials.entry(peer_id) {
                 Entry::Occupied(mut entry) => {
+                    // A dial to this peer is already in flight: queue the sender and
+                    // ignore the new `peer_addr` (the in-flight dial's address wins).
                     entry.get_mut().push_back(sender);
                 }
                 Entry::Vacant(entry) => {
@@ -352,6 +356,11 @@ impl EventLoop {
                     match self.swarm.dial(opts) {
                         Ok(()) => {
                             entry.insert(LinkedList::from([sender]));
+                        }
+                        // Already connected (or already dialing): the goal of being
+                        // connected to the peer is achieved, so report success.
+                        Err(DialError::DialPeerConditionFalse(_)) => {
+                            let _ = sender.send(Ok(()));
                         }
                         Err(e) => {
                             let _ = sender.send(Err(Box::new(e)));
@@ -404,4 +413,8 @@ impl std::fmt::Display for DialFailed {
     }
 }
 
-impl Error for DialFailed {}
+impl Error for DialFailed {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}

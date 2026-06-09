@@ -36,5 +36,8 @@ tonic-build = "0.12"
 [patch.crates-io]
 # core2 0.4.0 is yanked from crates.io; pin to a committed copy so the build works
 # without needing a pre-populated registry cache.
-# Remove this patch and the patches/ directory once nothing in the tree depends on libp2p 0.51 (multihash >= 0.18 dropped core2). Check with: cargo tree -i core2
+# KEEP this patch: it is required by the libp2p 0.51 interop-test dev-dependency
+# (the main crate's libp2p 0.56 no longer needs core2, but 0.51 does).
+# Remove this patch and the patches/ directory only when that dev-dependency goes away.
+# Check with: cargo tree -i core2
 core2 = { path = "patches/core2-0.4.0" }

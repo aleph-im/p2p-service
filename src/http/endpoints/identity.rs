@@ -27,11 +27,11 @@ impl From<NodeInfo> for IdentifyResponse {
 pub async fn identify(
     app_state: web::Data<AppState>,
 ) -> Result<web::Json<IdentifyResponse>, actix_web::Error> {
-    let node_info = {
-        let mut p2p_client = app_state.p2p_client.lock().await;
-        p2p_client.identify().await
-    }
-    .map_err(|_identify_error| EndpointError::ServiceUnavailable)?;
+    let mut client = app_state.p2p_client.clone();
+    let node_info = client
+        .identify()
+        .await
+        .map_err(|_identify_error| EndpointError::ServiceUnavailable)?;
 
     Ok(web::Json(node_info.into()))
 }

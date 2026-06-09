@@ -89,14 +89,19 @@ async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr
     }
 }
 
-async fn subscribe_to_topics(network_client: &mut P2PClient, topics: &Vec<String>) {
+async fn subscribe_to_topics(
+    network_client: &mut P2PClient,
+    topics: &Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     for topic in topics {
         info!("Subscribing to topic: {}", topic);
         let topic = gossipsub::IdentTopic::new(topic);
         if let Err(e) = network_client.subscribe(&topic).await {
-            error!("Could not subscribe to {}: {}", topic, e);
+            // A node that cannot subscribe runs deaf; abort startup.
+            return Err(format!("could not subscribe to topic {}: {}", topic, e).into());
         }
     }
+    Ok(())
 }
 
 async fn publish_message(network_client: &mut P2PClient, delivery: &Delivery, metrics: &Metrics) {
@@ -248,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dial_bootstrap_peers(&mut network_client, &app_config.p2p.peers).await;
 
     // Subscribe to topics
-    subscribe_to_topics(&mut network_client, &app_config.p2p.topics).await;
+    subscribe_to_topics(&mut network_client, &app_config.p2p.topics).await?;
 
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
@@ -262,7 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
-        p2p_client: tokio::sync::Mutex::new(network_client.clone()),
+        p2p_client: network_client.clone(),
         peer_id,
         metrics: metrics.clone(),
     });

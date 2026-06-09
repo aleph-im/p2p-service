@@ -27,9 +27,19 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
         .start_listening("/ip4/127.0.0.1/tcp/0".parse().unwrap())
         .await
         .unwrap();
-    // Wait for the listener to be registered, then read the actual address.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let info_a = client_a.identify().await.unwrap();
+    // Poll until the listener is registered, then read the actual address.
+    let info_a = {
+        let mut info = None;
+        for _ in 0..50 {
+            let candidate = client_a.identify().await.unwrap();
+            if !candidate.listen_multiaddrs.is_empty() {
+                info = Some(candidate);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        info.expect("node A never reported a listen address within 5 seconds")
+    };
     let addr_a = info_a
         .listen_multiaddrs
         .first()
