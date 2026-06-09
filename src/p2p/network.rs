@@ -1,99 +1,83 @@
-use std::collections::{HashMap, LinkedList};
 use std::collections::hash_map::{DefaultHasher, Entry};
+use std::collections::{HashMap, LinkedList};
 use std::error::Error;
-use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{
-    channel::{mpsc, oneshot},
-    SinkExt, StreamExt,
-};
-use libp2p::{
-    core::upgrade,
-    dns::TokioDnsConfig,
-    gossipsub, identity, Multiaddr,
-    noise,
-    PeerId,
-    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
-    Swarm,
-    tcp::tokio::Transport as TcpTransport, Transport,
-    yamux,
-};
-use libp2p::core::upgrade::SelectUpgrade;
+use futures::channel::{mpsc, oneshot};
+use futures::{SinkExt, StreamExt};
 use libp2p::gossipsub::{
-    Behaviour as GossipsubBehaviour, Event as GossipsubEvent, Message as GossipsubMessage,
+    self, Behaviour as GossipsubBehaviour, Event as GossipsubEvent, Message as GossipsubMessage,
     MessageAuthenticity, MessageId, ValidationMode,
 };
+use libp2p::identify;
 use libp2p::multiaddr::Protocol;
-use libp2p::tcp::Config as GenTcpConfig;
-use log::{debug, info};
+use libp2p::swarm::dial_opts::DialOpts;
+use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
+use log::{debug, info, warn};
 use prometheus_client::metrics::gauge::Gauge;
 
-use libp2p_mplex;
+pub const IDENTIFY_PROTOCOL: &str = "/aleph/id/1.0.0";
 
-fn make_transport(
-    id_keys: &identity::Keypair,
-) -> std::io::Result<libp2p::core::transport::Boxed<(PeerId, libp2p::core::muxing::StreamMuxerBox)>>
-{
-    let tcp_transport = TcpTransport::new(GenTcpConfig::default().nodelay(true));
-    let dns_transport =
-        TokioDnsConfig::system(tcp_transport).expect("should be able to create DNS transport");
+#[derive(NetworkBehaviour)]
+pub struct Behaviour {
+    pub gossipsub: GossipsubBehaviour,
+    pub identify: identify::Behaviour,
+}
 
-    let yamux_config = yamux::Config::default();
-    // Mplex is deprecated, we just support it to communicate with older nodes.
-    let mplex_config = libp2p_mplex::MplexConfig::new();
-    let multiplex_upgrade = SelectUpgrade::new(yamux_config, mplex_config);
+fn make_gossipsub_config() -> gossipsub::Config {
+    // To content-address messages, we take the hash of the message and use it as an ID.
+    let message_id_fn = |message: &GossipsubMessage| {
+        let mut s = DefaultHasher::new();
+        message.data.hash(&mut s);
+        MessageId::from(s.finish().to_string())
+    };
 
-    Ok(dns_transport
-        .upgrade(upgrade::Version::V1)
-        .authenticate(
-            noise::Config::new(id_keys).expect("signing libp2p-noise static DH keypair failed"),
-        )
-        .multiplex(multiplex_upgrade)
-        .boxed())
+    gossipsub::ConfigBuilder::default()
+        .heartbeat_interval(Duration::from_secs(1))
+        .validation_mode(ValidationMode::Strict)
+        .message_id_fn(message_id_fn)
+        .max_transmit_size(262144)
+        .max_messages_per_rpc(Some(100))
+        .duplicate_cache_time(Duration::from_secs(1800))
+        .build()
+        .expect("static gossipsub config should be valid")
 }
 
 pub async fn new(
     id_keys: identity::Keypair,
     connected_peers: Gauge,
 ) -> Result<(P2PClient, impl StreamExt<Item = Event>, EventLoop), Box<dyn Error>> {
-    // Create a public/private key pair, either random or based on a seed.
-    let peer_id = PeerId::from(id_keys.public());
-
-    let transport = make_transport(&id_keys).expect("should be able to create transport");
-
-    let swarm = {
-        // To content-address message, we can take the hash of message and use it as an ID.
-        let message_id_fn = |message: &GossipsubMessage| {
-            let mut s = DefaultHasher::new();
-            message.data.hash(&mut s);
-            MessageId::from(s.finish().to_string())
-        };
-
-        // Set a custom gossipsub
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(1)) // This is set to aid debugging by not cluttering the log space
-            .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
-            .message_id_fn(message_id_fn) // content-address messages. No two messages of the
-            // same content will be propagated.
-            .max_transmit_size(262144) // Inline messages can be quite large, up to over 200KB.
-            .max_messages_per_rpc(Some(100))
-            .duplicate_cache_time(Duration::from_secs(1800))
-            .build()
-            .expect("Valid config");
-
-        // build a gossipsub network behaviour
-        let gossipsub: GossipsubBehaviour =
-            GossipsubBehaviour::new(MessageAuthenticity::Signed(id_keys), gossipsub_config)
-                .expect("Correct configuration");
-
-        let behaviour = MyBehaviour { gossipsub };
-
-        SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id)
-            .build()
-    };
+    let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default().nodelay(true),
+            noise::Config::new,
+            // Mplex is deprecated; kept as fallback to talk to pre-N nodes.
+            (yamux::Config::default, libp2p_mplex::Config::default),
+        )?
+        .with_dns()?
+        .with_behaviour(|key| {
+            let gossipsub = GossipsubBehaviour::new(
+                MessageAuthenticity::Signed(key.clone()),
+                make_gossipsub_config(),
+            )
+            .expect("static gossipsub behaviour config should be valid");
+            let identify = identify::Behaviour::new(
+                identify::Config::new(IDENTIFY_PROTOCOL.to_string(), key.public())
+                    .with_agent_version(format!("aleph-p2p-service/{}", env!("CARGO_PKG_VERSION"))),
+            );
+            Behaviour {
+                gossipsub,
+                identify,
+            }
+        })?
+        // Gossipsub mesh links see periodic traffic; non-mesh connections
+        // must survive between heartbeats and maintenance ticks.
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(300)))
+        .build();
 
     let (command_sender, command_receiver) = mpsc::channel(0);
     let (event_sender, event_receiver) = mpsc::channel(0);
@@ -106,36 +90,14 @@ pub async fn new(
     ))
 }
 
-#[derive(NetworkBehaviour)]
-#[behaviour(out_event = "MyBehaviourEvent")]
-struct MyBehaviour {
-    gossipsub: GossipsubBehaviour,
-}
-
-#[allow(clippy::large_enum_variant)]
-enum MyBehaviourEvent {
-    Gossipsub(GossipsubEvent),
-}
-
-impl From<GossipsubEvent> for MyBehaviourEvent {
-    fn from(event: GossipsubEvent) -> Self {
-        MyBehaviourEvent::Gossipsub(event)
-    }
-}
-
-impl Debug for MyBehaviourEvent {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Gossipsub event")
-    }
-}
-
 type CommandResponseSender<T = ()> = oneshot::Sender<Result<T, Box<dyn Error + Send>>>;
 type CommandResponseReceiver<T = ()> = oneshot::Receiver<Result<T, Box<dyn Error + Send>>>;
 
 #[derive(Debug)]
 pub struct NodeInfo {
     pub peer_id: PeerId,
-    pub multiaddrs: Vec<Multiaddr>,
+    pub listen_multiaddrs: Vec<Multiaddr>,
+    pub external_multiaddrs: Vec<Multiaddr>,
 }
 
 #[derive(Debug)]
@@ -165,54 +127,41 @@ enum Command {
 
 #[derive(Clone)]
 pub struct P2PClient {
-    /// A channel to send commands to the P2P network task.
     sender: mpsc::Sender<Command>,
 }
 
-impl P2PClient {
-    async fn send_command(&mut self, command: Command) {
-        self.sender
-            .send(command)
-            .await
-            .expect("Command receiver should not to be dropped");
-    }
+#[derive(Debug)]
+pub struct ChannelClosed;
 
+impl std::fmt::Display for ChannelClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "P2P event loop is not running")
+    }
+}
+
+impl Error for ChannelClosed {}
+
+impl P2PClient {
     async fn send_command_and_wait<TResponse>(
         &mut self,
         command: Command,
         receiver: CommandResponseReceiver<TResponse>,
     ) -> Result<TResponse, Box<dyn Error + Send>> {
-        self.sender
-            .send(command)
-            .await
-            .expect("Command receiver should not to be dropped");
-        receiver.await.expect("Sender should not be dropped")
+        if self.sender.send(command).await.is_err() {
+            return Err(Box::new(ChannelClosed));
+        }
+        match receiver.await {
+            Ok(result) => result,
+            Err(_) => Err(Box::new(ChannelClosed)),
+        }
     }
 
-    /// Start listening for P2P connections from other nodes.
     pub async fn start_listening(&mut self, addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
         self.send_command_and_wait(Command::StartListening { addr, sender }, receiver)
             .await
     }
 
-    /// Dial a peer.
-    pub async fn dial(
-        &mut self,
-        peer_id: PeerId,
-        peer_addr: Multiaddr,
-    ) -> CommandResponseReceiver<()> {
-        let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::Dial {
-            peer_id,
-            peer_addr,
-            sender,
-        })
-        .await;
-        receiver
-    }
-
-    /// Dial a peer and wait for the operation to complete.
     pub async fn dial_and_wait(
         &mut self,
         peer_id: PeerId,
@@ -230,20 +179,17 @@ impl P2PClient {
         .await
     }
 
-    /// Get information about this node.
-    pub async fn identify(&mut self) -> CommandResponseReceiver<NodeInfo> {
+    pub async fn identify(&mut self) -> Result<NodeInfo, Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-        self.send_command(Command::Identify { sender }).await;
-        receiver
+        self.send_command_and_wait(Command::Identify { sender }, receiver)
+            .await
     }
 
-    /// Subscribe to a pubsub topic.
     pub async fn subscribe(
         &mut self,
         topic: &gossipsub::IdentTopic,
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-
         self.send_command_and_wait(
             Command::Subscribe {
                 topic: topic.clone(),
@@ -254,14 +200,12 @@ impl P2PClient {
         .await
     }
 
-    /// Publish a message on a pubsub topic.
     pub async fn publish(
         &mut self,
         topic: &gossipsub::IdentTopic,
         message: &[u8],
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
-
         self.send_command_and_wait(
             Command::PublishMessage {
                 topic: topic.clone(),
@@ -275,15 +219,11 @@ impl P2PClient {
 }
 
 pub enum Event {
-    PubsubMessage {
-        _propagation_source: PeerId,
-        _message_id: MessageId,
-        message: GossipsubMessage,
-    },
+    PubsubMessage { message: GossipsubMessage },
 }
 
 pub struct EventLoop {
-    swarm: Swarm<MyBehaviour>,
+    swarm: Swarm<Behaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
     pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
@@ -292,7 +232,7 @@ pub struct EventLoop {
 
 impl EventLoop {
     fn new(
-        swarm: Swarm<MyBehaviour>,
+        swarm: Swarm<Behaviour>,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<Event>,
         connected_peers: Gauge,
@@ -309,39 +249,47 @@ impl EventLoop {
     pub async fn run(mut self) {
         loop {
             futures::select! {
-                event = self.swarm.next() => self.handle_event(event.expect("Swarm stream to be infinite")).await,
+                event = self.swarm.select_next_some() => self.handle_event(event).await,
                 command = self.command_receiver.next() => match command {
                     Some(c) => self.handle_command(c).await,
-                    // Command channel closed, shut down the event loop.
+                    // Command channel closed: shut down the event loop.
                     None => return,
                 }
             }
         }
     }
 
-    async fn handle_event(&mut self, event: SwarmEvent<MyBehaviourEvent, void::Void>) {
+    async fn handle_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
         match event {
-            SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub_event)) => {
-                debug!("{:?}", gossipsub_event);
-                match gossipsub_event {
-                    GossipsubEvent::Message {
-                        propagation_source,
-                        message_id,
-                        message,
-                    } => {
-                        self.event_sender
-                            .send(Event::PubsubMessage {
-                                _propagation_source: propagation_source,
-                                _message_id: message_id,
-                                message,
-                            })
-                            .await
-                            .expect("receiver should not be dropped");
-                    }
-                    gossipsub_event => {
-                        debug!("Unhandled Gossipsub event: {:?}", gossipsub_event)
-                    }
+            SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(GossipsubEvent::Message {
+                message,
+                ..
+            })) => {
+                if self
+                    .event_sender
+                    .send(Event::PubsubMessage { message })
+                    .await
+                    .is_err()
+                {
+                    warn!("Pubsub event receiver dropped; discarding message");
                 }
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(other)) => {
+                debug!("Unhandled gossipsub event: {:?}", other);
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
+                peer_id,
+                info,
+                ..
+            })) => {
+                debug!(
+                    "Identify from {}: {} listen addrs",
+                    peer_id,
+                    info.listen_addrs.len()
+                );
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Identify(other)) => {
+                debug!("Identify event: {:?}", other);
             }
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
@@ -362,10 +310,10 @@ impl EventLoop {
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {
                     if let Some(senders) = self.pending_dials.remove(&peer_id) {
-                        debug!("Failed to dial {}", peer_id);
+                        debug!("Failed to dial {}: {}", peer_id, error);
                         let arced_error = Arc::new(error);
                         for sender in senders {
-                            let _ = sender.send(Err(Box::new(arced_error.clone())));
+                            let _ = sender.send(Err(Box::new(DialFailed(arced_error.clone()))));
                         }
                     }
                 }
@@ -374,13 +322,10 @@ impl EventLoop {
                 let local_peer_id = *self.swarm.local_peer_id();
                 info!(
                     "Local node is listening on {:?}",
-                    address.with(Protocol::P2p(local_peer_id.into()))
+                    address.with(Protocol::P2p(local_peer_id))
                 );
             }
-            SwarmEvent::Dialing(peer_id) => {
-                debug!("Dialing {}...", peer_id)
-            }
-            swarm_event => debug!("Unhandled swarm event: {:?}", swarm_event),
+            other => debug!("Unhandled swarm event: {:?}", other),
         }
     }
 
@@ -398,14 +343,13 @@ impl EventLoop {
                 sender,
             } => match self.pending_dials.entry(peer_id) {
                 Entry::Occupied(mut entry) => {
-                    let senders = entry.get_mut();
-                    senders.push_back(sender);
+                    entry.get_mut().push_back(sender);
                 }
                 Entry::Vacant(entry) => {
-                    match self
-                        .swarm
-                        .dial(peer_addr.with(Protocol::P2p(peer_id.into())))
-                    {
+                    let opts = DialOpts::peer_id(peer_id)
+                        .addresses(vec![peer_addr])
+                        .build();
+                    match self.swarm.dial(opts) {
                         Ok(()) => {
                             entry.insert(LinkedList::from([sender]));
                         }
@@ -416,34 +360,48 @@ impl EventLoop {
                 }
             },
             Command::Identify { sender } => {
-                let multiaddrs = self
-                    .swarm
-                    .external_addresses()
-                    .map(|record| record.addr.clone())
-                    .collect();
-                let _ = sender.send(Ok(NodeInfo {
+                let node_info = NodeInfo {
                     peer_id: *self.swarm.local_peer_id(),
-                    multiaddrs,
-                }));
+                    listen_multiaddrs: self.swarm.listeners().cloned().collect(),
+                    external_multiaddrs: self.swarm.external_addresses().cloned().collect(),
+                };
+                let _ = sender.send(Ok(node_info));
             }
             Command::Subscribe { topic, sender } => {
-                if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
-                    let _ = sender.send(Err(Box::new(e)));
-                } else {
-                    let _ = sender.send(Ok(()));
-                }
+                let _ = match self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
+                    Ok(_) => sender.send(Ok(())),
+                    Err(e) => sender.send(Err(Box::new(e))),
+                };
             }
             Command::PublishMessage {
                 topic,
                 message,
                 sender,
             } => {
-                if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, message) {
-                    let _ = sender.send(Err(Box::new(e)));
-                } else {
-                    let _ = sender.send(Ok(()));
-                }
+                let _ = match self.swarm.behaviour_mut().gossipsub.publish(topic, message) {
+                    Ok(_) => sender.send(Ok(())),
+                    Err(e) => sender.send(Err(Box::new(e))),
+                };
             }
         }
     }
 }
+
+/// Error returned to dial requesters when an outgoing connection attempt fails.
+/// Wraps the swarm dial error so callers can inspect the failure reason.
+#[derive(Debug)]
+pub struct DialFailed(Arc<libp2p::swarm::DialError>);
+
+impl DialFailed {
+    pub fn dial_error(&self) -> &libp2p::swarm::DialError {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DialFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Error for DialFailed {}

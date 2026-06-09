@@ -2,9 +2,9 @@ pub mod dial;
 mod error;
 pub mod identity;
 
+use crate::http::AppState;
 use actix_web::{web, HttpResponse, Result};
 use prometheus_client::encoding::text::encode;
-use crate::AppState;
 
 pub async fn metrics(data: web::Data<AppState>) -> Result<HttpResponse> {
     data.metrics.http_requests_total.inc();
@@ -12,7 +12,9 @@ pub async fn metrics(data: web::Data<AppState>) -> Result<HttpResponse> {
 
     let mut buffer = String::new();
     if let Err(e) = encode(&mut buffer, &data.metrics.registry) {
-        return Ok(HttpResponse::InternalServerError().body(format!("Failed to encode metrics: {}", e)));
+        return Ok(
+            HttpResponse::InternalServerError().body(format!("Failed to encode metrics: {}", e))
+        );
     }
 
     Ok(HttpResponse::Ok()

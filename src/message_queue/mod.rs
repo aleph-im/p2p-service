@@ -10,9 +10,9 @@ use lapin::{BasicProperties, Channel, Consumer};
 use lapin::{Connection, ConnectionProperties, ExchangeKind};
 
 use crate::config::AppConfig;
-use log::{info, warn, error};
-use std::time::Duration;
+use log::{error, info, warn};
 use std::process::exit;
+use std::time::Duration;
 
 /// A client for the exchanges we create in RabbitMQ. The client abstracts two exchanges:
 /// 1. A queue where other processes on the node publish messages to be sent to the P2P network

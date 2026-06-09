@@ -12,18 +12,24 @@ pub struct EventLabel {
 #[derive(Clone)]
 pub struct Metrics {
     pub registry: Arc<prometheus_client::registry::Registry>,
-    
+
     // P2P metrics
     pub connected_peers: Gauge,
     pub total_messages_sent: Counter,
     pub total_messages_received: Counter,
     pub p2p_events: prometheus_client::metrics::family::Family<EventLabel, Counter>,
-    
+
     // Memory metrics
     pub memory_usage_bytes: Gauge,
-    
+
     // HTTP metrics
     pub http_requests_total: Counter,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Metrics {
