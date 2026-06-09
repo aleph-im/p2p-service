@@ -14,6 +14,10 @@ pub struct P2PConfig {
     pub port: Port,
     /// Port of the P2P daemon control API.
     pub control_port: Port,
+    /// Port of the gRPC control/pubsub API.
+    pub grpc_port: Port,
+    /// Port of the HTTP metrics/health server.
+    pub metrics_port: Port,
     /// Response port for the P2P daemon.
     pub listen_port: Port,
     /// URL of the P2P daemon.
@@ -40,6 +44,8 @@ impl Default for P2PConfig {
             http_port: Port(4024),
             port: Port(4025),
             control_port: Port(4030),
+            grpc_port: Port(4030),
+            metrics_port: Port(4040),
             listen_port: Port(4031),
             daemon_host: "p2pd".to_owned(),
             reconnect_delay: 60,

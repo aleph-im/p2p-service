@@ -424,3 +424,32 @@ impl Error for DialFailed {
         Some(self.0.as_ref())
     }
 }
+
+/// Classification of a `dial_and_wait` failure, shared by the HTTP and gRPC
+/// error mappings so both APIs report dial failures consistently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialErrorKind {
+    /// The remote answered with a peer ID different from the requested one.
+    WrongPeerId,
+    /// The connection attempt failed (peer unreachable, transport error, ...).
+    Unreachable,
+    /// Not a dial error (e.g. the event loop is gone).
+    Internal,
+}
+
+/// Classify an error returned by [`P2PClient::dial_and_wait`].
+///
+/// Dial failures can surface either as an immediate `DialError` (the swarm
+/// rejected the dial) or as a [`DialFailed`] reported by the event loop once
+/// the connection attempt fails.
+pub fn classify_dial_error(error: &(dyn Error + Send + 'static)) -> DialErrorKind {
+    let dial_error = match error.downcast_ref::<DialFailed>() {
+        Some(dial_failed) => Some(dial_failed.dial_error()),
+        None => error.downcast_ref::<libp2p::swarm::DialError>(),
+    };
+    match dial_error {
+        Some(libp2p::swarm::DialError::WrongPeerId { .. }) => DialErrorKind::WrongPeerId,
+        Some(_) => DialErrorKind::Unreachable,
+        None => DialErrorKind::Internal,
+    }
+}

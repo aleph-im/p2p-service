@@ -279,6 +279,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let p2p_to_mq_handle =
         tokio::spawn(p2p_to_mq_loop(mq_client, topic_receivers, metrics.clone()));
 
+    let grpc_service = aleph_p2p_service::grpc::GrpcService {
+        client: network_client.clone(),
+        subscriptions: subscriptions.clone(),
+        local_peer_id: peer_id,
+        metrics: metrics.clone(),
+    };
+    let grpc_addr: std::net::SocketAddr =
+        format!("0.0.0.0:{}", app_config.p2p.grpc_port.0).parse()?;
+    info!("gRPC server listening on: {}", grpc_addr);
+    let grpc_handle = tokio::spawn(async move {
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(grpc_service.into_server())
+            .serve(grpc_addr)
+            .await
+        {
+            error!("gRPC server stopped: {}", e);
+        }
+    });
+
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
         p2p_client: network_client.clone(),
@@ -286,7 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics: metrics.clone(),
     });
 
-    let http_server_bind_address = format!("0.0.0.0:{}", &app_config.p2p.control_port.0);
+    let http_server_bind_address = format!("0.0.0.0:{}", &app_config.p2p.metrics_port.0);
     let http_server = HttpServer::new(move || {
         App::new()
             .app_data(Data::clone(&app_data))
@@ -307,7 +326,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // If the HTTP server goes down, cancel the P2P loops as well
-    let handles = vec![p2p_event_loop_handle, mq_to_p2p_handle, p2p_to_mq_handle];
+    let handles = vec![
+        p2p_event_loop_handle,
+        mq_to_p2p_handle,
+        p2p_to_mq_handle,
+        grpc_handle,
+    ];
     for handle in handles {
         handle.abort();
         let _ = handle.await;
