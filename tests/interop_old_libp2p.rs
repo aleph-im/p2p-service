@@ -129,6 +129,7 @@ async fn new_node_interops_with_libp2p_0_51_node() {
                     .unwrap();
                 new_publish_sent = true;
             }
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
         }
     }
 
