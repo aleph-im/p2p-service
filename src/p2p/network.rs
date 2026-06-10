@@ -134,7 +134,6 @@ pub struct NodeInfo {
 #[derive(Debug, Clone)]
 pub struct NetworkSnapshot {
     pub connected: HashSet<PeerId>,
-    pub n_connections: usize,
     /// Preferred peers and their known addresses. Always empty for now;
     /// filled from dial hints once preferred-peer support lands (A9).
     pub preferred: Vec<(PeerId, Vec<Multiaddr>)>,
@@ -539,9 +538,6 @@ impl EventLoop {
             Command::NetworkSnapshot { sender } => {
                 let snapshot = NetworkSnapshot {
                     connected: self.connected.keys().copied().collect(),
-                    // Peer count, not transport-connection count; good enough
-                    // for the maintenance loop's watermark decisions.
-                    n_connections: self.connected.len(),
                     preferred: Vec::new(),
                 };
                 let _ = sender.send(Ok(snapshot));

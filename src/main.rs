@@ -69,13 +69,8 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
 fn bootstrap_peer_ids(peers: &[Multiaddr]) -> std::collections::HashSet<PeerId> {
     peers
         .iter()
-        .filter_map(|addr| {
-            let mut a = addr.clone();
-            match a.pop() {
-                Some(Protocol::P2p(peer_id)) => Some(peer_id),
-                _ => None,
-            }
-        })
+        .filter_map(p2p::maintenance::split_peer_multiaddr)
+        .map(|(id, _)| id)
         .collect()
 }
 
@@ -98,6 +93,11 @@ fn validate_config(app_config: &AppConfig) -> Result<(), Box<dyn std::error::Err
             p2p.max_protected_share
         )
         .into());
+    }
+    if p2p.maintenance_interval_secs == 0 {
+        return Err(
+            "Invalid p2p config: maintenance_interval_secs must be at least 1 (0 hot-spins the command channel)".into(),
+        );
     }
     Ok(())
 }

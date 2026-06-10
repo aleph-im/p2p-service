@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 use log::{debug, info, warn};
+use rand::seq::SliceRandom;
 
 use crate::p2p::backoff::DialBackoff;
 use crate::p2p::network::P2PClient;
@@ -15,6 +16,7 @@ const BACKOFF_BASE: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(300);
 const PEERSTORE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
 
+#[derive(Debug, Clone)]
 pub struct MaintenanceSettings {
     pub interval: Duration,
     pub low_water: usize,
@@ -67,13 +69,15 @@ pub async fn run(
             }
         };
 
-        let mut candidates: Vec<(PeerId, Multiaddr)> = Vec::new();
+        // High-priority candidates (preferred + bootstrap) are always dialed;
+        // they are few and must not be skipped.
+        let mut priority_candidates: Vec<(PeerId, Multiaddr)> = Vec::new();
 
         // Preferred peers should always be connected.
         for (peer_id, addrs) in &snapshot.preferred {
             if !snapshot.connected.contains(peer_id) {
                 for addr in addrs {
-                    candidates.push((*peer_id, addr.clone()));
+                    priority_candidates.push((*peer_id, addr.clone()));
                 }
             }
         }
@@ -83,22 +87,41 @@ pub async fn run(
             .iter()
             .any(|(peer_id, _)| snapshot.connected.contains(peer_id));
         if !bootstrap_connected {
-            candidates.extend(bootstrap.iter().cloned());
+            priority_candidates.extend(bootstrap.iter().cloned());
         }
 
         // Below the low watermark: dial peers we have seen before.
-        if snapshot.connected.len() < settings.low_water {
-            let stored = peerstore
-                .lock()
-                .expect("peerstore lock poisoned")
-                .dial_candidates(PEERSTORE_MAX_AGE_SECS, now_unix());
-            candidates.extend(stored.into_iter().filter(|(peer_id, addr)| {
-                !snapshot.connected.contains(peer_id) && !is_undialable(addr)
-            }));
-        }
+        // Bound the number of peerstore refill dials per tick to avoid:
+        //   - overshooting high_water when many candidates are queued, and
+        //   - worst-case tick durations proportional to the full peerstore size
+        //     (each dial attempt carries a 10-second timeout).
+        // The budget adds a small slack (+2) so one slow connection does not
+        // stall the refill completely.
+        let refill_budget = settings.low_water.saturating_sub(snapshot.connected.len()) + 2;
+        let mut refill_candidates: Vec<(PeerId, Multiaddr)> =
+            if snapshot.connected.len() < settings.low_water {
+                let stored = peerstore
+                    .lock()
+                    .expect("peerstore lock poisoned")
+                    .dial_candidates(PEERSTORE_MAX_AGE_SECS, now_unix());
+                let mut candidates: Vec<(PeerId, Multiaddr)> = stored
+                    .into_iter()
+                    .filter(|(peer_id, addr)| {
+                        !snapshot.connected.contains(peer_id) && !is_undialable(addr)
+                    })
+                    .collect();
+                // Shuffle so that no single peer dominates successive ticks.
+                candidates.shuffle(&mut rand::thread_rng());
+                candidates
+            } else {
+                Vec::new()
+            };
+        // Honour the per-tick budget for refill dials.
+        refill_candidates.truncate(refill_budget);
 
         let mut attempted: HashSet<PeerId> = HashSet::new();
-        for (peer_id, addr) in candidates {
+        // TODO(A9): dial with all known addresses via DialOpts::peer_id(p).addresses(addrs) so a dead first addr does not mask a live second one.
+        for (peer_id, addr) in priority_candidates.into_iter().chain(refill_candidates) {
             if snapshot.connected.contains(&peer_id) || attempted.contains(&peer_id) {
                 continue;
             }
