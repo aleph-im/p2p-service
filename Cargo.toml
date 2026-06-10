@@ -34,6 +34,7 @@ async-stream = "0.3"
 # Old libp2p stack used by deployed nodes; kept as a dev-dependency to prove
 # gossipsub wire compatibility in tests/interop_old_libp2p.rs.
 libp2p-old = { package = "libp2p", version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "tcp", "tokio", "yamux"] }
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"

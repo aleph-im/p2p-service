@@ -2,7 +2,7 @@ use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::{HashMap, LinkedList};
 use std::error::Error;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
@@ -18,6 +18,8 @@ use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 use prometheus_client::metrics::gauge::Gauge;
+
+use crate::p2p::peerstore::PeerStore;
 
 use crate::subscriptions::{now_millis, Envelope, Subscriptions};
 
@@ -58,6 +60,7 @@ pub async fn new(
     id_keys: identity::Keypair,
     connected_peers: Gauge,
     subscriptions: Arc<Subscriptions>,
+    peerstore: Arc<Mutex<PeerStore>>,
 ) -> Result<(P2PClient, EventLoop), Box<dyn Error>> {
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
@@ -93,7 +96,13 @@ pub async fn new(
         P2PClient {
             sender: command_sender,
         },
-        EventLoop::new(swarm, command_receiver, subscriptions, connected_peers),
+        EventLoop::new(
+            swarm,
+            command_receiver,
+            subscriptions,
+            connected_peers,
+            peerstore,
+        ),
     ))
 }
 
@@ -231,6 +240,7 @@ pub struct EventLoop {
     subscriptions: Arc<Subscriptions>,
     pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
     connected_peers: Gauge,
+    peerstore: Arc<Mutex<PeerStore>>,
 }
 
 impl EventLoop {
@@ -239,6 +249,7 @@ impl EventLoop {
         command_receiver: mpsc::Receiver<Command>,
         subscriptions: Arc<Subscriptions>,
         connected_peers: Gauge,
+        peerstore: Arc<Mutex<PeerStore>>,
     ) -> Self {
         Self {
             swarm,
@@ -246,6 +257,7 @@ impl EventLoop {
             subscriptions,
             pending_dials: Default::default(),
             connected_peers,
+            peerstore,
         }
     }
 
@@ -295,6 +307,15 @@ impl EventLoop {
                     peer_id,
                     info.listen_addrs.len()
                 );
+                let tcp_addrs = info
+                    .listen_addrs
+                    .into_iter()
+                    .filter(|a| a.iter().any(|p| matches!(p, Protocol::Tcp(_))))
+                    .collect::<Vec<_>>();
+                self.peerstore
+                    .lock()
+                    .expect("peerstore lock poisoned")
+                    .record(&peer_id, tcp_addrs, crate::p2p::peerstore::now_unix());
             }
             SwarmEvent::Behaviour(BehaviourEvent::Identify(other)) => {
                 debug!("Identify event: {:?}", other);
@@ -303,6 +324,14 @@ impl EventLoop {
                 peer_id, endpoint, ..
             } => {
                 self.connected_peers.inc();
+                self.peerstore
+                    .lock()
+                    .expect("peerstore lock poisoned")
+                    .record(
+                        &peer_id,
+                        [endpoint.get_remote_address().clone()],
+                        crate::p2p::peerstore::now_unix(),
+                    );
                 if endpoint.is_dialer() {
                     if let Some(senders) = self.pending_dials.remove(&peer_id) {
                         debug!("Successfully dialed {}", peer_id);

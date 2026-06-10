@@ -36,6 +36,8 @@ pub struct P2PConfig {
     pub topics: Vec<String>,
     /// Number of API workers.
     pub nb_api_workers: usize,
+    /// Path of the persisted peerstore file.
+    pub peerstore_path: std::path::PathBuf,
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -63,6 +65,7 @@ impl Default for P2PConfig {
             ],
             topics: vec!["ALIVE".to_owned(), "ALEPH-TEST".to_owned()],
             nb_api_workers: 4,
+            peerstore_path: std::path::PathBuf::from("peerstore.json"),
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use libp2p::gossipsub::IdentTopic;
@@ -6,6 +6,7 @@ use libp2p::identity;
 use prometheus_client::metrics::gauge::Gauge;
 
 use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
 
 #[tokio::test]
@@ -19,6 +20,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
         identity::Keypair::generate_ed25519(),
         Gauge::default(),
         subscriptions_a,
+        Arc::new(Mutex::new(PeerStore::default())),
     )
     .await
     .unwrap();
@@ -26,6 +28,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
         identity::Keypair::generate_ed25519(),
         Gauge::default(),
         subscriptions_b.clone(),
+        Arc::new(Mutex::new(PeerStore::default())),
     )
     .await
     .unwrap();

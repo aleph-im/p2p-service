@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prometheus_client::metrics::gauge::Gauge;
@@ -11,6 +11,7 @@ use aleph_p2p_service::grpc::proto::{
 use aleph_p2p_service::grpc::GrpcService;
 use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
 
 async fn start_service() -> (AlephP2pClient<Channel>, String) {
@@ -19,6 +20,7 @@ async fn start_service() -> (AlephP2pClient<Channel>, String) {
         libp2p::identity::Keypair::generate_ed25519(),
         Gauge::default(),
         subscriptions.clone(),
+        Arc::new(Mutex::new(PeerStore::default())),
     )
     .await
     .unwrap();

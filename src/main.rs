@@ -19,6 +19,7 @@ use aleph_p2p_service::http::AppState;
 use aleph_p2p_service::message_queue::{self, RabbitMqClient};
 use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::P2PClient;
+use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::{Envelope, Subscriptions};
 use aleph_p2p_service::{http, p2p};
 use tokio_stream::wrappers::TcpListenerStream;
@@ -222,10 +223,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let subscriptions = Arc::new(Subscriptions::new(1024));
 
+    let peerstore_path = app_config.p2p.peerstore_path.clone();
+    let peerstore = Arc::new(std::sync::Mutex::new(PeerStore::load(&peerstore_path)));
+    info!(
+        "Loaded peerstore from {:?}: {} known peers",
+        peerstore_path,
+        peerstore.lock().expect("peerstore lock poisoned").len()
+    );
+
     let (mut network_client, network_event_loop) = p2p::network::new(
         id_keys,
         metrics.connected_peers.clone(),
         subscriptions.clone(),
+        peerstore.clone(),
     )
     .await?;
 
@@ -300,6 +310,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Periodically flush the peerstore to disk.
+    // save() does file I/O while the lock is held; this is acceptable because
+    // the file is small and the only contenders are synchronous record() calls.
+    let peerstore_flush = peerstore.clone();
+    let peerstore_flush_path = peerstore_path.clone();
+    let peerstore_flush_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        // The first tick fires immediately; skip it so we do not write on startup.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(e) = peerstore_flush
+                .lock()
+                .expect("peerstore lock poisoned")
+                .save(&peerstore_flush_path)
+            {
+                warn!("Failed to flush peerstore: {}", e);
+            }
+        }
+    });
+
     let app_data = Data::new(AppState {
         app_config: app_config.clone(),
         p2p_client: network_client.clone(),
@@ -333,10 +364,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mq_to_p2p_handle,
         p2p_to_mq_handle,
         grpc_handle,
+        peerstore_flush_handle,
     ];
     for handle in handles {
         handle.abort();
         let _ = handle.await;
+    }
+
+    // Final peerstore flush on shutdown.
+    if let Err(e) = peerstore
+        .lock()
+        .expect("peerstore lock poisoned")
+        .save(&peerstore_path)
+    {
+        warn!("Failed to save peerstore on shutdown: {}", e);
     }
 
     Ok(())

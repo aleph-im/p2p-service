@@ -1,11 +1,12 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prometheus_client::metrics::gauge::Gauge;
 
 use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
 
 /// Old-stack (libp2p 0.51) swarm with the exact production parameters of v0.1.x.
@@ -64,6 +65,7 @@ async fn new_node_interops_with_libp2p_0_51_node() {
         libp2p::identity::Keypair::generate_ed25519(),
         Gauge::default(),
         subscriptions.clone(),
+        Arc::new(Mutex::new(PeerStore::default())),
     )
     .await
     .unwrap();
