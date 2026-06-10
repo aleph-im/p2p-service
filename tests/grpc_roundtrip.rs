@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use prometheus_client::metrics::gauge::Gauge;
 use tonic::transport::Channel;
 
 use aleph_p2p_service::grpc::proto::aleph_p2p_client::AlephP2pClient;
@@ -27,7 +26,7 @@ async fn start_service() -> (AlephP2pClient<Channel>, String) {
             max_protected_share: 0.5,
         },
         HashSet::new(),
-        Gauge::default(),
+        Metrics::new(),
         subscriptions.clone(),
         Arc::new(Mutex::new(PeerStore::default())),
     )

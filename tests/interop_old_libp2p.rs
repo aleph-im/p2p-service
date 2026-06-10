@@ -4,8 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use prometheus_client::metrics::gauge::Gauge;
-
+use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::{self, NetworkSettings};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
@@ -71,7 +70,7 @@ async fn new_node_interops_with_libp2p_0_51_node() {
             max_protected_share: 0.5,
         },
         HashSet::new(),
-        Gauge::default(),
+        Metrics::new(),
         subscriptions.clone(),
         Arc::new(Mutex::new(PeerStore::default())),
     )

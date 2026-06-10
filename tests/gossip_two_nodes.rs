@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use libp2p::gossipsub::IdentTopic;
 use libp2p::identity;
-use prometheus_client::metrics::gauge::Gauge;
 
+use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::{self, NetworkSettings};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
@@ -30,7 +30,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
         identity::Keypair::generate_ed25519(),
         default_settings(),
         HashSet::new(),
-        Gauge::default(),
+        Metrics::new(),
         subscriptions_a,
         Arc::new(Mutex::new(PeerStore::default())),
     )
@@ -40,7 +40,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
         identity::Keypair::generate_ed25519(),
         default_settings(),
         HashSet::new(),
-        Gauge::default(),
+        Metrics::new(),
         subscriptions_b.clone(),
         Arc::new(Mutex::new(PeerStore::default())),
     )

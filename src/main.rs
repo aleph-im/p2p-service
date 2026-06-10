@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id_keys,
         network_settings,
         bootstrap_peers,
-        metrics.connected_peers.clone(),
+        metrics.clone(),
         subscriptions.clone(),
         peerstore.clone(),
     )
@@ -279,25 +279,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .configure(http::config)
     })
     .workers(app_config.p2p.nb_api_workers)
+    // Signals are handled by the supervision select below; letting actix
+    // install its own handlers would race ours.
+    .disable_signals()
     .bind(http_server_bind_address)
     .expect("bind should succeed");
 
     info!("HTTP server listening on: {:?}", http_server.addrs());
 
-    if let Err(e) = http_server.run().await {
-        error!("HTTP server stopped: {:?}", e);
-    }
+    // `run()` is called outside the spawned task: the `HttpServer` factory is
+    // not `Send`, but the `Server` future it returns is.
+    let http_server_future = http_server.run();
+    let http_server_handle = tokio::spawn(async move {
+        if let Err(e) = http_server_future.await {
+            error!("Metrics HTTP server stopped: {:?}", e);
+        }
+    });
 
-    // If the HTTP server goes down, cancel the P2P loops as well
-    let handles = vec![
-        p2p_event_loop_handle,
-        maintenance_handle,
-        grpc_handle,
-        peerstore_flush_handle,
+    // Supervision: every spawned task is critical. If any of them ends, log
+    // which one died, flush the peerstore and exit non-zero so the container
+    // runtime restarts the service. SIGINT/SIGTERM trigger a clean shutdown.
+    let abort_handles = [
+        p2p_event_loop_handle.abort_handle(),
+        grpc_handle.abort_handle(),
+        maintenance_handle.abort_handle(),
+        peerstore_flush_handle.abort_handle(),
+        http_server_handle.abort_handle(),
     ];
-    for handle in handles {
+
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("installing the SIGTERM handler should succeed");
+
+    let exit_code = tokio::select! {
+        _ = p2p_event_loop_handle => { error!("Critical task 'p2p-event-loop' ended"); 1 }
+        _ = grpc_handle => { error!("Critical task 'grpc-server' ended"); 1 }
+        _ = maintenance_handle => { error!("Critical task 'maintenance' ended"); 1 }
+        _ = peerstore_flush_handle => { error!("Critical task 'peerstore-flusher' ended"); 1 }
+        _ = http_server_handle => { error!("Critical task 'metrics-http' ended"); 1 }
+        _ = tokio::signal::ctrl_c() => { info!("Shutdown signal received (SIGINT)"); 0 }
+        _ = sigterm.recv() => { info!("Shutdown signal received (SIGTERM)"); 0 }
+    };
+
+    for handle in abort_handles {
         handle.abort();
-        let _ = handle.await;
     }
 
     // Final peerstore flush on shutdown.
@@ -309,5 +333,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warn!("Failed to save peerstore on shutdown: {}", e);
     }
 
-    Ok(())
+    std::process::exit(exit_code);
 }

@@ -18,8 +18,8 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// Per-topic fanout of pubsub messages to local consumers (gRPC streams,
-/// and the RabbitMQ bridge until it is removed).
+/// Per-topic fanout of pubsub messages to local consumers (gRPC Subscribe
+/// streams).
 pub struct Subscriptions {
     capacity: usize,
     senders: RwLock<HashMap<String, broadcast::Sender<Arc<Envelope>>>>,

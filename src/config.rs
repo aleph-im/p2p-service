@@ -18,7 +18,8 @@ pub struct P2PConfig {
     pub peers: Vec<Multiaddr>,
     /// Topics to subscribe to.
     pub topics: Vec<String>,
-    /// Number of HTTP metrics server workers.
+    /// Number of HTTP metrics server workers. The server only serves
+    /// /metrics and /health, so 1 worker is typically sufficient.
     pub nb_api_workers: usize,
     /// Path of the persisted peerstore file.
     pub peerstore_path: std::path::PathBuf,

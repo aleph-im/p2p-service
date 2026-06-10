@@ -17,8 +17,8 @@ use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
-use prometheus_client::metrics::gauge::Gauge;
 
+use crate::metrics::Metrics;
 use crate::p2p::peerstore::PeerStore;
 use crate::p2p::subnet::{SubnetLimits, Verdict};
 
@@ -71,6 +71,9 @@ fn make_gossipsub_config() -> gossipsub::Config {
         // Peer exchange: advertise alternative peers on PRUNE (rust-libp2p
         // exchanges peer IDs); helps mesh self-healing alongside the
         // registry-driven dialing.
+        // NOTE: accept_px_threshold (PeerScoreThresholds) stays at its default;
+        // revisit it if prune_peers is ever set > 0 (it gates which peers we
+        // accept PX records from).
         .do_px()
         .build()
         .expect("static gossipsub config should be valid")
@@ -80,7 +83,7 @@ pub async fn new(
     id_keys: identity::Keypair,
     settings: NetworkSettings,
     bootstrap_peers: HashSet<PeerId>,
-    connected_peers: Gauge,
+    metrics: Metrics,
     subscriptions: Arc<Subscriptions>,
     peerstore: Arc<Mutex<PeerStore>>,
 ) -> Result<(P2PClient, EventLoop), Box<dyn Error>> {
@@ -104,6 +107,8 @@ pub async fn new(
                 // Makes set_application_score effective: preferred peers get a
                 // positive bonus, everyone else stays at the neutral default of 0.
                 app_specific_weight: 1.0,
+                // P6 IP-colocation stays at its default (penalty above 10 peers
+                // on the same IP, unreachable in practice given our /24 caps).
                 ..Default::default()
             };
             gossipsub
@@ -132,7 +137,7 @@ pub async fn new(
             swarm,
             command_receiver,
             subscriptions,
-            connected_peers,
+            metrics,
             peerstore,
             settings,
             bootstrap_peers,
@@ -321,7 +326,7 @@ pub struct EventLoop {
     command_receiver: mpsc::Receiver<Command>,
     subscriptions: Arc<Subscriptions>,
     pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
-    connected_peers: Gauge,
+    metrics: Metrics,
     peerstore: Arc<Mutex<PeerStore>>,
     settings: NetworkSettings,
     subnet_limits: SubnetLimits,
@@ -340,7 +345,7 @@ impl EventLoop {
         swarm: Swarm<Behaviour>,
         command_receiver: mpsc::Receiver<Command>,
         subscriptions: Arc<Subscriptions>,
-        connected_peers: Gauge,
+        metrics: Metrics,
         peerstore: Arc<Mutex<PeerStore>>,
         settings: NetworkSettings,
         bootstrap_peers: HashSet<PeerId>,
@@ -352,7 +357,7 @@ impl EventLoop {
             command_receiver,
             subscriptions,
             pending_dials: Default::default(),
-            connected_peers,
+            metrics,
             peerstore,
             settings,
             subnet_limits,
@@ -384,6 +389,7 @@ impl EventLoop {
             })) => match message.source {
                 None => warn!("Received pubsub message without source; discarding"),
                 Some(source) => {
+                    self.metrics.total_messages_received.inc();
                     let receivers = self.subscriptions.publish(Envelope {
                         topic: message.topic.to_string(),
                         source_peer_id: source.to_string(),
@@ -430,7 +436,7 @@ impl EventLoop {
                 connection_id,
                 ..
             } => {
-                self.connected_peers.inc();
+                self.metrics.connected_peers.inc();
                 if endpoint.is_dialer() {
                     // Only persist addresses we successfully dialed; inbound remote addrs
                     // are ephemeral source ports that are never dialable and would pollute
@@ -479,7 +485,7 @@ impl EventLoop {
                 num_established,
                 ..
             } => {
-                self.connected_peers.dec();
+                self.metrics.connected_peers.dec();
                 self.subnet_limits
                     .on_disconnection(endpoint.get_remote_address());
                 if num_established == 0 {
