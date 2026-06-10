@@ -28,6 +28,7 @@ services:
     ports:
       - "4025:4025"
       - "127.0.0.1:4030:4030"
+      - "127.0.0.1:4040:4040"
     command:
       - "--config"
       - "/etc/p2p-service/config.yml"

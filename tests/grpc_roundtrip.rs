@@ -5,7 +5,9 @@ use prometheus_client::metrics::gauge::Gauge;
 use tonic::transport::Channel;
 
 use aleph_p2p_service::grpc::proto::aleph_p2p_client::AlephP2pClient;
-use aleph_p2p_service::grpc::proto::{IdentifyRequest, PublishRequest, SubscribeRequest};
+use aleph_p2p_service::grpc::proto::{
+    DialRequest, IdentifyRequest, PublishRequest, SubscribeRequest,
+};
 use aleph_p2p_service::grpc::GrpcService;
 use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network;
@@ -122,4 +124,31 @@ async fn publish_without_echo_does_not_loop_back() {
     .unwrap();
     let result = tokio::time::timeout(Duration::from_secs(2), stream.message()).await;
     assert!(result.is_err(), "expected no message, got {:?}", result);
+}
+
+#[tokio::test]
+async fn dial_with_invalid_peer_id_returns_invalid_argument() {
+    let (mut grpc, _peer_id) = start_service().await;
+    let err = grpc
+        .dial(DialRequest {
+            peer_id: "not-a-peer-id".to_string(),
+            multiaddr: "/ip4/127.0.0.1/tcp/1".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn publish_empty_topic_returns_invalid_argument() {
+    let (mut grpc, _peer_id) = start_service().await;
+    let err = grpc
+        .publish(PublishRequest {
+            topic: "".to_string(),
+            payload: b"hello".to_vec(),
+            echo: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }

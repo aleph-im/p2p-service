@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 use libp2p::{Multiaddr, PeerId};
-use log::{info, warn};
+use log::{debug, error, info, warn};
 use tonic::{Request, Response, Status};
 
 use crate::metrics::Metrics;
@@ -66,7 +66,13 @@ fn map_dial_error_to_status(
             );
             Status::not_found(format!("peer unreachable: {error}"))
         }
-        DialErrorKind::Internal => Status::internal(error.to_string()),
+        DialErrorKind::Internal => {
+            error!(
+                "Internal error dialing {} with multiaddr {}: {}",
+                peer_id, multiaddr, error
+            );
+            Status::internal(error.to_string())
+        }
     }
 }
 
@@ -117,27 +123,36 @@ impl AlephP2p for GrpcService {
         request: Request<proto::PublishRequest>,
     ) -> Result<Response<proto::PublishResponse>, Status> {
         let request = request.into_inner();
+        if request.topic.is_empty() {
+            return Err(Status::invalid_argument("topic must not be empty"));
+        }
         let topic = libp2p::gossipsub::IdentTopic::new(&request.topic);
 
         let mut client = self.client.clone();
+        let mut no_peers = false;
         match client.publish(&topic, &request.payload).await {
             Ok(()) => {}
             Err(e) => {
                 // Publishing on a mesh with no peers must not fail the caller:
                 // with echo requested the local delivery still matters, and a
                 // node briefly without mesh peers is not an error condition.
-                let no_peers = matches!(
+                no_peers = matches!(
                     e.downcast_ref::<libp2p::gossipsub::PublishError>(),
                     Some(libp2p::gossipsub::PublishError::NoPeersSubscribedToTopic)
                 );
                 if !no_peers {
+                    self.metrics.increment_event("publish_error");
                     return Err(Status::internal(e.to_string()));
                 }
-                warn!("Publish on {} with no mesh peers", request.topic);
+                debug!("Publish on {} with no mesh peers", request.topic);
+                self.metrics.increment_event("publish_no_peers");
             }
         }
-        self.metrics.total_messages_sent.inc();
-        self.metrics.increment_event("message_published");
+        // Only count messages that actually reached the gossipsub layer with peers.
+        if !no_peers {
+            self.metrics.total_messages_sent.inc();
+            self.metrics.increment_event("message_published");
+        }
 
         if request.echo {
             self.subscriptions.publish(Envelope {
@@ -158,6 +173,9 @@ impl AlephP2p for GrpcService {
         request: Request<proto::SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         let topic_name = request.into_inner().topic;
+        if topic_name.is_empty() {
+            return Err(Status::invalid_argument("topic must not be empty"));
+        }
 
         // Create the broadcast receiver BEFORE joining the gossipsub topic so
         // that no message arriving in between is dropped, and before returning
@@ -166,6 +184,9 @@ impl AlephP2p for GrpcService {
         let mut receiver = self.subscriptions.subscribe(&topic_name);
 
         // Ensure the swarm is subscribed to the topic (idempotent).
+        // Note: topics joined via Subscribe are never left and registry entries are never
+        // pruned. This is acceptable for the fixed pyaleph topic set; revisit if
+        // arbitrary-topic clients appear.
         let mut client = self.client.clone();
         client
             .subscribe(&libp2p::gossipsub::IdentTopic::new(&topic_name))

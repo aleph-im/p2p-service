@@ -21,6 +21,7 @@ use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::P2PClient;
 use aleph_p2p_service::subscriptions::{Envelope, Subscriptions};
 use aleph_p2p_service::{http, p2p};
+use tokio_stream::wrappers::TcpListenerStream;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -285,13 +286,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_peer_id: peer_id,
         metrics: metrics.clone(),
     };
-    let grpc_addr: std::net::SocketAddr =
+    let grpc_bind_addr: std::net::SocketAddr =
         format!("0.0.0.0:{}", app_config.p2p.grpc_port.0).parse()?;
-    info!("gRPC server listening on: {}", grpc_addr);
+    let grpc_listener = tokio::net::TcpListener::bind(grpc_bind_addr).await?;
+    info!("gRPC server listening on: {}", grpc_listener.local_addr()?);
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) = tonic::transport::Server::builder()
             .add_service(grpc_service.into_server())
-            .serve(grpc_addr)
+            .serve_with_incoming(TcpListenerStream::new(grpc_listener))
             .await
         {
             error!("gRPC server stopped: {}", e);

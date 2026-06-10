@@ -12,7 +12,9 @@ pub struct P2PConfig {
     pub http_port: Port,
     /// Port to use for P2P communication.
     pub port: Port,
-    /// Port of the P2P daemon control API.
+    /// Deprecated: no longer bound by the service, will be removed.
+    /// gRPC now listens on `grpc_port` (default 4030, the old control_port value)
+    /// and metrics/health on `metrics_port`.
     pub control_port: Port,
     /// Port of the gRPC control/pubsub API.
     pub grpc_port: Port,
