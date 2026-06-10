@@ -260,6 +260,10 @@ async fn get_peers_returns_connected_peers_with_preferred_flag() {
         .await
         .unwrap();
 
+    // Allow a gossipsub heartbeat (1s interval) so the peer score, including
+    // the app-specific bonus for preferred peers, is refreshed.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
     let peers = grpc_b
         .get_peers(GetPeersRequest {})
         .await
@@ -268,6 +272,14 @@ async fn get_peers_returns_connected_peers_with_preferred_flag() {
     assert_eq!(peers.peers.len(), 1);
     assert_eq!(peers.peers[0].peer_id, peer_id_a);
     assert!(peers.peers[0].preferred);
+    // Peer scoring is enabled with app_specific_weight = 1.0, so the
+    // preferred-peer bonus (100.0) must surface as a positive score. Other
+    // score components can shift the exact value, so only require > 0.
+    assert!(
+        peers.peers[0].score > 0.0,
+        "preferred peer should have a positive application score, got {}",
+        peers.peers[0].score
+    );
 }
 
 #[tokio::test]

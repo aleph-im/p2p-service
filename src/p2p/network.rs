@@ -29,8 +29,7 @@ use crate::subscriptions::{now_millis, Envelope, Subscriptions};
 pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
 
 /// Application score granted to preferred peers. `set_application_score`
-/// only affects currently-connected peers and returns false (no-op) until
-/// gossipsub peer scoring is enabled (A10), so the score is applied both
+/// only affects currently-tracked peers, so the score is applied both
 /// when the preferred set is updated (for already-connected peers) and on
 /// ConnectionEstablished (for peers that connect later).
 pub const PREFERRED_PEER_APP_SCORE: f64 = 100.0;
@@ -69,6 +68,10 @@ fn make_gossipsub_config() -> gossipsub::Config {
         .max_transmit_size(262144)
         .max_messages_per_rpc(Some(100))
         .duplicate_cache_time(Duration::from_secs(1800))
+        // Peer exchange: advertise alternative peers on PRUNE (rust-libp2p
+        // exchanges peer IDs); helps mesh self-healing alongside the
+        // registry-driven dialing.
+        .do_px()
         .build()
         .expect("static gossipsub config should be valid")
 }
@@ -91,11 +94,21 @@ pub async fn new(
         )?
         .with_dns()?
         .with_behaviour(|key| {
-            let gossipsub = GossipsubBehaviour::new(
+            let mut gossipsub = GossipsubBehaviour::new(
                 MessageAuthenticity::Signed(key.clone()),
                 make_gossipsub_config(),
             )
             .expect("static gossipsub behaviour config should be valid");
+
+            let score_params = gossipsub::PeerScoreParams {
+                // Makes set_application_score effective: preferred peers get a
+                // positive bonus, everyone else stays at the neutral default of 0.
+                app_specific_weight: 1.0,
+                ..Default::default()
+            };
+            gossipsub
+                .with_peer_score(score_params, gossipsub::PeerScoreThresholds::default())
+                .expect("static peer score params should be valid");
             let identify = identify::Behaviour::new(
                 identify::Config::new(IDENTIFY_PROTOCOL_VERSION.to_string(), key.public())
                     .with_agent_version(format!("aleph-p2p-service/{}", env!("CARGO_PKG_VERSION"))),
@@ -448,8 +461,8 @@ impl EventLoop {
                 // bonus on connect: set_application_score only applies to
                 // currently-connected peers, so the call made when the
                 // preferred set was updated cannot cover peers connecting
-                // later. The returned bool is false while gossipsub peer
-                // scoring is disabled (pre-A10); ignore it.
+                // later. Scoring is enabled; the returned bool is false only
+                // for peers not currently tracked by the scorer.
                 if self.dial_hints.contains_key(&peer_id) || self.bootstrap_peers.contains(&peer_id)
                 {
                     self.swarm
@@ -622,10 +635,10 @@ impl EventLoop {
                 self.dial_hints.clear();
                 for (peer_id, addrs) in accepted_peers {
                     self.protected.insert(peer_id);
-                    // Only affects currently-connected peers, and only once
-                    // gossipsub peer scoring is enabled (A10). Preferred
-                    // peers that connect later get their bonus from the
-                    // ConnectionEstablished hook in handle_event.
+                    // Scoring is enabled; this only affects peers currently
+                    // tracked by the scorer (returns false otherwise).
+                    // Preferred peers that connect later get their bonus from
+                    // the ConnectionEstablished hook in handle_event.
                     self.swarm
                         .behaviour_mut()
                         .gossipsub
