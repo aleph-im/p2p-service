@@ -312,10 +312,12 @@ impl EventLoop {
                     .into_iter()
                     .filter(|a| a.iter().any(|p| matches!(p, Protocol::Tcp(_))))
                     .collect::<Vec<_>>();
-                self.peerstore
-                    .lock()
-                    .expect("peerstore lock poisoned")
-                    .record(&peer_id, tcp_addrs, crate::p2p::peerstore::now_unix());
+                if !tcp_addrs.is_empty() {
+                    self.peerstore
+                        .lock()
+                        .expect("peerstore lock poisoned")
+                        .record(&peer_id, tcp_addrs, crate::p2p::peerstore::now_unix());
+                }
             }
             SwarmEvent::Behaviour(BehaviourEvent::Identify(other)) => {
                 debug!("Identify event: {:?}", other);
@@ -324,15 +326,18 @@ impl EventLoop {
                 peer_id, endpoint, ..
             } => {
                 self.connected_peers.inc();
-                self.peerstore
-                    .lock()
-                    .expect("peerstore lock poisoned")
-                    .record(
-                        &peer_id,
-                        [endpoint.get_remote_address().clone()],
-                        crate::p2p::peerstore::now_unix(),
-                    );
                 if endpoint.is_dialer() {
+                    // Only persist addresses we successfully dialed; inbound remote addrs
+                    // are ephemeral source ports that are never dialable and would pollute
+                    // the peerstore, evicting real listen addresses via the 8-addr cap.
+                    self.peerstore
+                        .lock()
+                        .expect("peerstore lock poisoned")
+                        .record(
+                            &peer_id,
+                            [endpoint.get_remote_address().clone()],
+                            crate::p2p::peerstore::now_unix(),
+                        );
                     if let Some(senders) = self.pending_dials.remove(&peer_id) {
                         debug!("Successfully dialed {}", peer_id);
                         for sender in senders {
