@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -225,9 +226,11 @@ impl AlephP2p for GrpcService {
         let request = request.into_inner();
         // Lenient batch parsing (defense in depth, pyaleph pre-validates):
         // an entry with an invalid peer id is skipped entirely; an entry with
-        // some invalid multiaddrs keeps its valid ones. Skipped entries count
-        // neither as accepted nor as truncated.
+        // some invalid multiaddrs keeps its valid ones; duplicate peer ids
+        // keep their first occurrence. Skipped entries count neither as
+        // accepted nor as truncated.
         let mut peers = Vec::with_capacity(request.peers.len());
+        let mut seen: HashSet<PeerId> = HashSet::with_capacity(request.peers.len());
         for peer in request.peers {
             let Ok(peer_id) = PeerId::from_str(&peer.peer_id) else {
                 warn!(
@@ -236,6 +239,10 @@ impl AlephP2p for GrpcService {
                 );
                 continue;
             };
+            if !seen.insert(peer_id) {
+                warn!("SetPreferredPeers: skipping duplicate peer id {}", peer_id);
+                continue;
+            }
             let mut addrs = Vec::with_capacity(peer.multiaddrs.len());
             for addr in &peer.multiaddrs {
                 match Multiaddr::from_str(addr) {

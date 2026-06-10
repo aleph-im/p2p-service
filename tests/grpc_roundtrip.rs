@@ -269,3 +269,68 @@ async fn get_peers_returns_connected_peers_with_preferred_flag() {
     assert_eq!(peers.peers[0].peer_id, peer_id_a);
     assert!(peers.peers[0].preferred);
 }
+
+#[tokio::test]
+async fn set_preferred_peers_replacement_drops_old_set() {
+    let (mut grpc_a, peer_id_a) = start_service().await;
+    let (mut grpc_b, _peer_id_b) = start_service().await;
+
+    let info_a = grpc_a
+        .identify(IdentifyRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    let addr_a = info_a.listen_multiaddrs.first().unwrap().clone();
+
+    grpc_b
+        .set_preferred_peers(SetPreferredPeersRequest {
+            peers: vec![PreferredPeer {
+                peer_id: peer_id_a.clone(),
+                multiaddrs: vec![],
+            }],
+        })
+        .await
+        .unwrap();
+
+    grpc_b
+        .dial(DialRequest {
+            peer_id: peer_id_a.clone(),
+            multiaddr: addr_a,
+        })
+        .await
+        .unwrap();
+
+    let peers = grpc_b
+        .get_peers(GetPeersRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(peers.peers.len(), 1);
+    assert_eq!(peers.peers[0].peer_id, peer_id_a);
+    assert!(peers.peers[0].preferred);
+
+    // The preferred set is a full replacement: setting a different peer must
+    // drop A from the preferred set.
+    let other = libp2p::PeerId::from(libp2p::identity::Keypair::generate_ed25519().public());
+    grpc_b
+        .set_preferred_peers(SetPreferredPeersRequest {
+            peers: vec![PreferredPeer {
+                peer_id: other.to_string(),
+                multiaddrs: vec![],
+            }],
+        })
+        .await
+        .unwrap();
+
+    let peers = grpc_b
+        .get_peers(GetPeersRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(peers.peers.len(), 1);
+    assert_eq!(peers.peers[0].peer_id, peer_id_a);
+    assert!(
+        !peers.peers[0].preferred,
+        "A must lose its preferred flag after a full replacement"
+    );
+}

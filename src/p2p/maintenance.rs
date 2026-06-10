@@ -15,6 +15,11 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_BASE: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(300);
 const PEERSTORE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+/// Upper bound on preferred-peer dial attempts per maintenance tick.
+/// Preferred dial hints come from the registry and are attacker-influenced:
+/// a poisoned registry full of blackholed addresses would otherwise turn a
+/// tick into dozens of sequential DIAL_TIMEOUT waits.
+const MAX_PREFERRED_DIALS_PER_TICK: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct MaintenanceSettings {
@@ -60,6 +65,10 @@ pub async fn run(
     let mut backoff = DialBackoff::new(BACKOFF_BASE, BACKOFF_CAP);
 
     loop {
+        // Drop long-expired backoff entries so the map does not grow without
+        // bound across churning peers.
+        backoff.prune(Instant::now());
+
         let snapshot = match client.network_snapshot().await {
             Ok(snapshot) => snapshot,
             Err(e) => {
@@ -69,17 +78,17 @@ pub async fn run(
             }
         };
 
-        // High-priority candidates (preferred + bootstrap) are always dialed;
-        // they are few and must not be skipped. Each candidate carries all of
-        // its known addresses so a dead first address does not mask a live one.
+        // High-priority candidates: bootstrap re-anchoring first, then
+        // preferred peers. Each candidate carries all of its known addresses
+        // so a dead first address does not mask a live one.
+        //
+        // Ordering and capping matter here: preferred dial hints come from
+        // the registry and are attacker-controlled. A poisoned registry full
+        // of fail-slow (blackholed) hints must not consume the tick with
+        // sequential DIAL_TIMEOUT waits and starve bootstrap re-anchoring,
+        // so bootstrap entries go first (never capped; there are at most a
+        // handful) and preferred dials are capped per tick.
         let mut priority_candidates: Vec<(PeerId, Vec<Multiaddr>)> = Vec::new();
-
-        // Preferred peers should always be connected.
-        for (peer_id, addrs) in &snapshot.preferred {
-            if !snapshot.connected.contains(peer_id) && !addrs.is_empty() {
-                priority_candidates.push((*peer_id, addrs.clone()));
-            }
-        }
 
         // Stay anchored to at least one bootstrap peer.
         let bootstrap_connected = bootstrap
@@ -92,6 +101,28 @@ pub async fn run(
                     .map(|(peer_id, addr)| (*peer_id, vec![addr.clone()])),
             );
         }
+
+        // Preferred peers should always be connected. Drop undialable hint
+        // addresses (loopback/unspecified) so a poisoned registry cannot make
+        // us dial 127.0.0.1/0.0.0.0; shuffle so all hints rotate across ticks
+        // even when the cap applies.
+        let mut preferred_candidates: Vec<(PeerId, Vec<Multiaddr>)> = Vec::new();
+        for (peer_id, addrs) in &snapshot.preferred {
+            if snapshot.connected.contains(peer_id) {
+                continue;
+            }
+            let dialable: Vec<Multiaddr> = addrs
+                .iter()
+                .filter(|addr| !is_undialable(addr))
+                .cloned()
+                .collect();
+            if !dialable.is_empty() {
+                preferred_candidates.push((*peer_id, dialable));
+            }
+        }
+        preferred_candidates.shuffle(&mut rand::thread_rng());
+        preferred_candidates.truncate(MAX_PREFERRED_DIALS_PER_TICK);
+        priority_candidates.extend(preferred_candidates);
 
         // Below the low watermark: dial peers we have seen before.
         // Bound the number of peerstore refill dials per tick to avoid:

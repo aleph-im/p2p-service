@@ -28,9 +28,11 @@ use crate::subscriptions::{now_millis, Envelope, Subscriptions};
 /// not the identify wire protocol name.
 pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
 
-/// Application score granted to preferred peers. A no-op until gossipsub
-/// peer scoring is enabled (A10), but set eagerly so preferred peers get
-/// their bonus as soon as scoring lands.
+/// Application score granted to preferred peers. `set_application_score`
+/// only affects currently-connected peers and returns false (no-op) until
+/// gossipsub peer scoring is enabled (A10), so the score is applied both
+/// when the preferred set is updated (for already-connected peers) and on
+/// ConnectionEstablished (for peers that connect later).
 pub const PREFERRED_PEER_APP_SCORE: f64 = 100.0;
 
 /// Connection-limit parameters for the event loop.
@@ -442,6 +444,20 @@ impl EventLoop {
                     .or_default()
                     .push(remote_addr.clone());
 
+                // Grant preferred/bootstrap peers their application-score
+                // bonus on connect: set_application_score only applies to
+                // currently-connected peers, so the call made when the
+                // preferred set was updated cannot cover peers connecting
+                // later. The returned bool is false while gossipsub peer
+                // scoring is disabled (pre-A10); ignore it.
+                if self.dial_hints.contains_key(&peer_id) || self.bootstrap_peers.contains(&peer_id)
+                {
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .set_application_score(&peer_id, PREFERRED_PEER_APP_SCORE);
+                }
+
                 self.enforce_connection_limits(peer_id, connection_id, &remote_addr);
             }
             SwarmEvent::ConnectionClosed {
@@ -606,6 +622,10 @@ impl EventLoop {
                 self.dial_hints.clear();
                 for (peer_id, addrs) in accepted_peers {
                     self.protected.insert(peer_id);
+                    // Only affects currently-connected peers, and only once
+                    // gossipsub peer scoring is enabled (A10). Preferred
+                    // peers that connect later get their bonus from the
+                    // ConnectionEstablished hook in handle_event.
                     self.swarm
                         .behaviour_mut()
                         .gossipsub

@@ -55,6 +55,20 @@ impl DialBackoff {
     pub fn record_success(&mut self, peer: &PeerId) {
         self.state.remove(peer);
     }
+
+    /// Removes long-expired entries: peers whose backoff window ended more
+    /// than one cap interval ago. Such peers are already ready to dial, so
+    /// dropping their state changes nothing except keeping the map from
+    /// growing without bound as failing peers come and go.
+    pub fn prune(&mut self, now: Instant) {
+        let cap = self.cap;
+        self.state.retain(|_, state| now < state.next_attempt + cap);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.state.len()
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +108,22 @@ mod tests {
         }
         assert!(!backoff.ready(&peer, now + Duration::from_secs(29)));
         assert!(backoff.ready(&peer, now + Duration::from_secs(91)));
+    }
+
+    /// Test 5: prune drops entries whose backoff expired more than one cap
+    /// interval ago; the peer stays ready and the map is emptied.
+    #[test]
+    fn prune_removes_long_expired_entries() {
+        let cap = Duration::from_secs(60);
+        let mut backoff = DialBackoff::new(Duration::from_secs(1), cap);
+        let peer = PeerId::random();
+        let now = Instant::now();
+        backoff.record_failure(peer, now);
+        assert_eq!(backoff.len(), 1);
+        let later = now + cap * 3;
+        backoff.prune(later);
+        assert!(backoff.ready(&peer, later));
+        assert_eq!(backoff.len(), 0);
     }
 
     /// Test 4: a success resets the backoff; the peer is ready immediately.
