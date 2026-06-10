@@ -52,6 +52,8 @@ with pyaleph (the Core Channel Node software). The `AlephP2P` service provides:
 The node also subscribes at startup to every topic listed in the `p2p.topics`
 configuration variable.
 
+**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials.
+
 ### Metrics and health
 
 The HTTP server on `metrics_port` exposes:
@@ -96,6 +98,8 @@ ignored harmlessly, so existing configuration files keep working.
 
 Prometheus scrape targets must be moved from the old `control_port` to
 `metrics_port` (default 4040).
+
+Operators who had customized `control_port` must now set `grpc_port` explicitly; the old key is ignored. It is also recommended to point `peerstore_path` at a mounted volume so that known peers survive container recreation (the default `peerstore.json` lands in the container filesystem and is lost on recreation).
 
 ## Building
 

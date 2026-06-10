@@ -1,4 +1,4 @@
-FROM rust:1.75
+FROM rust:1.88
 WORKDIR /usr/src/p2p-service
 RUN apt-get update && apt-get install -y protobuf-compiler
 COPY . .
