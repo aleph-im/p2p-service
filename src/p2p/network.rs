@@ -28,6 +28,11 @@ use crate::subscriptions::{now_millis, Envelope, Subscriptions};
 /// not the identify wire protocol name.
 pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
 
+/// Application score granted to preferred peers. A no-op until gossipsub
+/// peer scoring is enabled (A10), but set eagerly so preferred peers get
+/// their bonus as soon as scoring lands.
+pub const PREFERRED_PEER_APP_SCORE: f64 = 100.0;
+
 /// Connection-limit parameters for the event loop.
 #[derive(Debug, Clone)]
 pub struct NetworkSettings {
@@ -134,9 +139,17 @@ pub struct NodeInfo {
 #[derive(Debug, Clone)]
 pub struct NetworkSnapshot {
     pub connected: HashSet<PeerId>,
-    /// Preferred peers and their known addresses. Always empty for now;
-    /// filled from dial hints once preferred-peer support lands (A9).
+    /// Preferred peers and their known dial-hint addresses.
     pub preferred: Vec<(PeerId, Vec<Multiaddr>)>,
+}
+
+/// Per-peer view returned by [`P2PClient::get_peers`].
+#[derive(Debug, Clone)]
+pub struct PeerSnapshot {
+    pub peer_id: PeerId,
+    pub multiaddrs: Vec<Multiaddr>,
+    pub preferred: bool,
+    pub score: f64,
 }
 
 #[derive(Debug)]
@@ -147,7 +160,7 @@ enum Command {
     },
     Dial {
         peer_id: PeerId,
-        peer_addr: Multiaddr,
+        peer_addrs: Vec<Multiaddr>,
         sender: CommandResponseSender,
     },
     Identify {
@@ -164,6 +177,13 @@ enum Command {
     },
     NetworkSnapshot {
         sender: CommandResponseSender<NetworkSnapshot>,
+    },
+    SetPreferredPeers {
+        peers: Vec<(PeerId, Vec<Multiaddr>)>,
+        sender: CommandResponseSender<(u32, u32)>, // (accepted, truncated)
+    },
+    GetPeers {
+        sender: CommandResponseSender<Vec<PeerSnapshot>>,
     },
 }
 
@@ -207,13 +227,13 @@ impl P2PClient {
     pub async fn dial_and_wait(
         &mut self,
         peer_id: PeerId,
-        peer_addr: Multiaddr,
+        peer_addrs: Vec<Multiaddr>,
     ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
         self.send_command_and_wait(
             Command::Dial {
                 peer_id,
-                peer_addr,
+                peer_addrs,
                 sender,
             },
             receiver,
@@ -264,6 +284,21 @@ impl P2PClient {
         self.send_command_and_wait(Command::NetworkSnapshot { sender }, receiver)
             .await
     }
+
+    pub async fn set_preferred_peers(
+        &mut self,
+        peers: Vec<(PeerId, Vec<Multiaddr>)>,
+    ) -> Result<(u32, u32), Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_command_and_wait(Command::SetPreferredPeers { peers, sender }, receiver)
+            .await
+    }
+
+    pub async fn get_peers(&mut self) -> Result<Vec<PeerSnapshot>, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_command_and_wait(Command::GetPeers { sender }, receiver)
+            .await
+    }
 }
 
 pub struct EventLoop {
@@ -279,9 +314,10 @@ pub struct EventLoop {
     connected: HashMap<PeerId, Vec<Multiaddr>>,
     /// Peers that are never disconnected for limit enforcement (bootstrap + preferred).
     protected: HashSet<PeerId>,
-    /// Stored for A9: preferred peers will be unioned into `protected` when they are added.
-    #[allow(dead_code)]
+    /// Bootstrap peers stay protected regardless of the preferred set.
     bootstrap_peers: HashSet<PeerId>,
+    /// Dial hints for preferred peers, used by the maintenance loop.
+    dial_hints: HashMap<PeerId, Vec<Multiaddr>>,
 }
 
 impl EventLoop {
@@ -308,6 +344,7 @@ impl EventLoop {
             connected: HashMap::new(),
             protected,
             bootstrap_peers,
+            dial_hints: HashMap::new(),
         }
     }
 
@@ -484,18 +521,16 @@ impl EventLoop {
             }
             Command::Dial {
                 peer_id,
-                peer_addr,
+                peer_addrs,
                 sender,
             } => match self.pending_dials.entry(peer_id) {
                 Entry::Occupied(mut entry) => {
                     // A dial to this peer is already in flight: queue the sender and
-                    // ignore the new `peer_addr` (the in-flight dial's address wins).
+                    // ignore the new `peer_addrs` (the in-flight dial's addresses win).
                     entry.get_mut().push_back(sender);
                 }
                 Entry::Vacant(entry) => {
-                    let opts = DialOpts::peer_id(peer_id)
-                        .addresses(vec![peer_addr])
-                        .build();
+                    let opts = DialOpts::peer_id(peer_id).addresses(peer_addrs).build();
                     match self.swarm.dial(opts) {
                         Ok(()) => {
                             entry.insert(LinkedList::from([sender]));
@@ -538,9 +573,68 @@ impl EventLoop {
             Command::NetworkSnapshot { sender } => {
                 let snapshot = NetworkSnapshot {
                     connected: self.connected.keys().copied().collect(),
-                    preferred: Vec::new(),
+                    preferred: self
+                        .dial_hints
+                        .iter()
+                        .map(|(peer_id, addrs)| (*peer_id, addrs.clone()))
+                        .collect(),
                 };
                 let _ = sender.send(Ok(snapshot));
+            }
+            Command::SetPreferredPeers { peers, sender } => {
+                // Cap the protected set so a poisoned registry cannot monopolize
+                // connection slots. Bootstrap peers are always protected on top.
+                let cap =
+                    (self.settings.high_water as f32 * self.settings.max_protected_share) as usize;
+                let truncated = peers.len().saturating_sub(cap) as u32;
+                let accepted_peers: Vec<_> = peers.into_iter().take(cap).collect();
+                let accepted = accepted_peers.len() as u32;
+
+                // Reset scores of peers that are no longer preferred.
+                let new_set: HashSet<PeerId> =
+                    accepted_peers.iter().map(|(peer_id, _)| *peer_id).collect();
+                for old_peer in self.protected.clone() {
+                    if !new_set.contains(&old_peer) && !self.bootstrap_peers.contains(&old_peer) {
+                        self.protected.remove(&old_peer);
+                        self.swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .set_application_score(&old_peer, 0.0);
+                    }
+                }
+
+                self.dial_hints.clear();
+                for (peer_id, addrs) in accepted_peers {
+                    self.protected.insert(peer_id);
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .set_application_score(&peer_id, PREFERRED_PEER_APP_SCORE);
+                    self.dial_hints.insert(peer_id, addrs);
+                }
+                info!(
+                    "Preferred peer set updated: {} accepted, {} truncated",
+                    accepted, truncated
+                );
+                let _ = sender.send(Ok((accepted, truncated)));
+            }
+            Command::GetPeers { sender } => {
+                let peers = self
+                    .connected
+                    .iter()
+                    .map(|(peer_id, addrs)| PeerSnapshot {
+                        peer_id: *peer_id,
+                        multiaddrs: addrs.clone(),
+                        preferred: self.protected.contains(peer_id),
+                        score: self
+                            .swarm
+                            .behaviour()
+                            .gossipsub
+                            .peer_score(peer_id)
+                            .unwrap_or(0.0),
+                    })
+                    .collect();
+                let _ = sender.send(Ok(peers));
             }
         }
     }

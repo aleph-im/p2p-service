@@ -7,7 +7,8 @@ use tonic::transport::Channel;
 
 use aleph_p2p_service::grpc::proto::aleph_p2p_client::AlephP2pClient;
 use aleph_p2p_service::grpc::proto::{
-    DialRequest, IdentifyRequest, PublishRequest, SubscribeRequest,
+    DialRequest, GetPeersRequest, IdentifyRequest, PreferredPeer, PublishRequest,
+    SetPreferredPeersRequest, SubscribeRequest,
 };
 use aleph_p2p_service::grpc::GrpcService;
 use aleph_p2p_service::metrics::Metrics;
@@ -161,4 +162,110 @@ async fn publish_empty_topic_returns_invalid_argument() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn set_preferred_peers_accepts_and_reports_counts() {
+    let (mut grpc, _peer_id) = start_service().await;
+    let peer = libp2p::PeerId::from(libp2p::identity::Keypair::generate_ed25519().public());
+    let result = grpc
+        .set_preferred_peers(SetPreferredPeersRequest {
+            peers: vec![PreferredPeer {
+                peer_id: peer.to_string(),
+                multiaddrs: vec!["/ip4/127.0.0.1/tcp/4025".to_string()],
+            }],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(result.accepted, 1);
+    assert_eq!(result.truncated, 0);
+}
+
+#[tokio::test]
+async fn set_preferred_peers_skips_invalid_entries() {
+    let (mut grpc, _peer_id) = start_service().await;
+    let good = libp2p::PeerId::from(libp2p::identity::Keypair::generate_ed25519().public());
+    let result = grpc
+        .set_preferred_peers(SetPreferredPeersRequest {
+            peers: vec![
+                PreferredPeer {
+                    peer_id: "not-a-peer-id".to_string(),
+                    multiaddrs: vec![],
+                },
+                PreferredPeer {
+                    peer_id: good.to_string(),
+                    multiaddrs: vec!["garbage".to_string(), "/ip4/10.0.0.1/tcp/4025".to_string()],
+                },
+            ],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    // The invalid peer id entry is skipped; the good peer survives with its valid addr.
+    assert_eq!(result.accepted, 1);
+    assert_eq!(result.truncated, 0);
+}
+
+#[tokio::test]
+async fn set_preferred_peers_truncates_over_the_protected_share_cap() {
+    // start_service uses high_water 160 and max_protected_share 0.5 -> cap 80.
+    let (mut grpc, _peer_id) = start_service().await;
+    let peers: Vec<PreferredPeer> = (0..85)
+        .map(|_| {
+            let p = libp2p::PeerId::from(libp2p::identity::Keypair::generate_ed25519().public());
+            PreferredPeer {
+                peer_id: p.to_string(),
+                multiaddrs: vec![],
+            }
+        })
+        .collect();
+    let result = grpc
+        .set_preferred_peers(SetPreferredPeersRequest { peers })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(result.accepted, 80);
+    assert_eq!(result.truncated, 5);
+}
+
+#[tokio::test]
+async fn get_peers_returns_connected_peers_with_preferred_flag() {
+    let (mut grpc_a, peer_id_a) = start_service().await;
+    let (mut grpc_b, _peer_id_b) = start_service().await;
+
+    let info_a = grpc_a
+        .identify(IdentifyRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    let addr_a = info_a.listen_multiaddrs.first().unwrap().clone();
+
+    // Mark A preferred on B before dialing.
+    grpc_b
+        .set_preferred_peers(SetPreferredPeersRequest {
+            peers: vec![PreferredPeer {
+                peer_id: peer_id_a.clone(),
+                multiaddrs: vec![],
+            }],
+        })
+        .await
+        .unwrap();
+
+    grpc_b
+        .dial(DialRequest {
+            peer_id: peer_id_a.clone(),
+            multiaddr: addr_a,
+        })
+        .await
+        .unwrap();
+
+    let peers = grpc_b
+        .get_peers(GetPeersRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(peers.peers.len(), 1);
+    assert_eq!(peers.peers[0].peer_id, peer_id_a);
+    assert!(peers.peers[0].preferred);
 }

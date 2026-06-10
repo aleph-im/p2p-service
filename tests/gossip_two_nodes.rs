@@ -80,7 +80,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
     let mut rx = subscriptions_b.subscribe("interop-test");
 
     client_b
-        .dial_and_wait(info_a.peer_id, addr_a)
+        .dial_and_wait(info_a.peer_id, vec![addr_a])
         .await
         .unwrap();
 

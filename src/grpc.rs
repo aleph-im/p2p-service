@@ -112,7 +112,7 @@ impl AlephP2p for GrpcService {
 
         let mut client = self.client.clone();
         client
-            .dial_and_wait(peer_id, multiaddr.clone())
+            .dial_and_wait(peer_id, vec![multiaddr.clone()])
             .await
             .map_err(|e| map_dial_error_to_status(e, &peer_id, &multiaddr))?;
         Ok(Response::new(proto::DialResponse {}))
@@ -220,17 +220,65 @@ impl AlephP2p for GrpcService {
 
     async fn set_preferred_peers(
         &self,
-        _request: Request<proto::SetPreferredPeersRequest>,
+        request: Request<proto::SetPreferredPeersRequest>,
     ) -> Result<Response<proto::SetPreferredPeersResponse>, Status> {
-        // Implemented in a later task.
-        Err(Status::unimplemented("set_preferred_peers"))
+        let request = request.into_inner();
+        // Lenient batch parsing (defense in depth, pyaleph pre-validates):
+        // an entry with an invalid peer id is skipped entirely; an entry with
+        // some invalid multiaddrs keeps its valid ones. Skipped entries count
+        // neither as accepted nor as truncated.
+        let mut peers = Vec::with_capacity(request.peers.len());
+        for peer in request.peers {
+            let Ok(peer_id) = PeerId::from_str(&peer.peer_id) else {
+                warn!(
+                    "SetPreferredPeers: skipping invalid peer id {:?}",
+                    peer.peer_id
+                );
+                continue;
+            };
+            let mut addrs = Vec::with_capacity(peer.multiaddrs.len());
+            for addr in &peer.multiaddrs {
+                match Multiaddr::from_str(addr) {
+                    Ok(addr) => addrs.push(addr),
+                    Err(_) => warn!(
+                        "SetPreferredPeers: skipping invalid multiaddr {:?} for {}",
+                        addr, peer_id
+                    ),
+                }
+            }
+            peers.push((peer_id, addrs));
+        }
+
+        let mut client = self.client.clone();
+        let (accepted, truncated) = client
+            .set_preferred_peers(peers)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(proto::SetPreferredPeersResponse {
+            accepted,
+            truncated,
+        }))
     }
 
     async fn get_peers(
         &self,
         _request: Request<proto::GetPeersRequest>,
     ) -> Result<Response<proto::GetPeersResponse>, Status> {
-        // Implemented in a later task.
-        Err(Status::unimplemented("get_peers"))
+        let mut client = self.client.clone();
+        let peers = client
+            .get_peers()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(proto::GetPeersResponse {
+            peers: peers
+                .into_iter()
+                .map(|p| proto::PeerInfo {
+                    peer_id: p.peer_id.to_string(),
+                    multiaddrs: p.multiaddrs.iter().map(|a| a.to_string()).collect(),
+                    preferred: p.preferred,
+                    score: p.score,
+                })
+                .collect(),
+        }))
     }
 }

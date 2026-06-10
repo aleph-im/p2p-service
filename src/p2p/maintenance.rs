@@ -70,15 +70,14 @@ pub async fn run(
         };
 
         // High-priority candidates (preferred + bootstrap) are always dialed;
-        // they are few and must not be skipped.
-        let mut priority_candidates: Vec<(PeerId, Multiaddr)> = Vec::new();
+        // they are few and must not be skipped. Each candidate carries all of
+        // its known addresses so a dead first address does not mask a live one.
+        let mut priority_candidates: Vec<(PeerId, Vec<Multiaddr>)> = Vec::new();
 
         // Preferred peers should always be connected.
         for (peer_id, addrs) in &snapshot.preferred {
-            if !snapshot.connected.contains(peer_id) {
-                for addr in addrs {
-                    priority_candidates.push((*peer_id, addr.clone()));
-                }
+            if !snapshot.connected.contains(peer_id) && !addrs.is_empty() {
+                priority_candidates.push((*peer_id, addrs.clone()));
             }
         }
 
@@ -87,7 +86,11 @@ pub async fn run(
             .iter()
             .any(|(peer_id, _)| snapshot.connected.contains(peer_id));
         if !bootstrap_connected {
-            priority_candidates.extend(bootstrap.iter().cloned());
+            priority_candidates.extend(
+                bootstrap
+                    .iter()
+                    .map(|(peer_id, addr)| (*peer_id, vec![addr.clone()])),
+            );
         }
 
         // Below the low watermark: dial peers we have seen before.
@@ -120,8 +123,11 @@ pub async fn run(
         refill_candidates.truncate(refill_budget);
 
         let mut attempted: HashSet<PeerId> = HashSet::new();
-        // TODO(A9): dial with all known addresses via DialOpts::peer_id(p).addresses(addrs) so a dead first addr does not mask a live second one.
-        for (peer_id, addr) in priority_candidates.into_iter().chain(refill_candidates) {
+        for (peer_id, addrs) in priority_candidates.into_iter().chain(
+            refill_candidates
+                .into_iter()
+                .map(|(peer_id, addr)| (peer_id, vec![addr])),
+        ) {
             if snapshot.connected.contains(&peer_id) || attempted.contains(&peer_id) {
                 continue;
             }
@@ -129,8 +135,8 @@ pub async fn run(
                 continue;
             }
             attempted.insert(peer_id);
-            debug!("Maintenance: dialing {} at {}", peer_id, addr);
-            match tokio::time::timeout(DIAL_TIMEOUT, client.dial_and_wait(peer_id, addr)).await {
+            debug!("Maintenance: dialing {} at {:?}", peer_id, addrs);
+            match tokio::time::timeout(DIAL_TIMEOUT, client.dial_and_wait(peer_id, addrs)).await {
                 Ok(Ok(())) => {
                     info!("Maintenance: connected to {}", peer_id);
                     backoff.record_success(&peer_id);

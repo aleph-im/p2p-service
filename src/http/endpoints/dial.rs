@@ -52,7 +52,7 @@ pub async fn dial(
     // The client is a cheap channel handle; clone it for this request.
     let mut client = app_state.p2p_client.clone();
     client
-        .dial_and_wait(peer_id, multiaddr.clone())
+        .dial_and_wait(peer_id, vec![multiaddr.clone()])
         .await
         .map_err(|dial_error| handle_dial_error(dial_error, peer_id, &multiaddr))?;
 
