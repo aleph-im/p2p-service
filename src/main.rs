@@ -79,31 +79,27 @@ fn bootstrap_peer_ids(peers: &[Multiaddr]) -> std::collections::HashSet<PeerId> 
         .collect()
 }
 
-async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr]) {
-    for peer_addr in peers.iter() {
-        let mut addr = peer_addr.clone();
-        let last_protocol = addr.pop();
-        let peer_id = match last_protocol {
-            Some(Protocol::P2p(peer_id)) => peer_id,
-            _ => {
-                error!("Bootstrap peer multiaddr must end with its peer ID (/p2p/<peer-id>).");
-                continue;
-            }
-        };
-
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            network_client.dial_and_wait(peer_id, addr),
+/// Reject configurations that the connection-limit machinery cannot honour.
+fn validate_config(app_config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let p2p = &app_config.p2p;
+    if p2p.low_water > p2p.high_water {
+        return Err(format!(
+            "Invalid p2p config: low_water ({}) must not exceed high_water ({})",
+            p2p.low_water, p2p.high_water
         )
-        .await
-        {
-            Err(_) => error!("Timed out while dialing bootstrap peer {}", peer_addr),
-            Ok(result) => match result {
-                Ok(_) => info!("Successfully dialed bootstrap peer: {}", &peer_addr),
-                Err(e) => error!("Failed to dial bootstrap peer {}: {}", peer_addr, e),
-            },
-        }
+        .into());
     }
+    if p2p.per_subnet_cap == 0 {
+        return Err("Invalid p2p config: per_subnet_cap must be at least 1".into());
+    }
+    if !(0.0..=1.0).contains(&p2p.max_protected_share) {
+        return Err(format!(
+            "Invalid p2p config: max_protected_share ({}) must be between 0.0 and 1.0",
+            p2p.max_protected_share
+        )
+        .into());
+    }
+    Ok(())
 }
 
 async fn subscribe_to_topics(
@@ -226,6 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_config = read_config(&args.config);
     debug!("Config: {:?}", app_config);
+    validate_config(&app_config)?;
 
     let _sentry_guard = configure_sentry(&app_config);
 
@@ -279,9 +276,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Listening not to fail.");
     }
 
-    // Dial bootstrap peers
-    dial_bootstrap_peers(&mut network_client, &app_config.p2p.peers).await;
-
     // Dedup topics (preserve order, discard duplicates).
     let topics: Vec<String> = {
         let mut seen = Vec::new();
@@ -302,6 +296,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Subscribe to topics
     subscribe_to_topics(&mut network_client, &topics).await?;
+
+    // Mesh maintenance: dials bootstrap peers right away on its first pass
+    // (startup no longer blocks on bootstrap dialing) and keeps the node
+    // connected from then on.
+    let maintenance_handle = tokio::spawn(p2p::maintenance::run(
+        network_client.clone(),
+        app_config.p2p.peers.clone(),
+        p2p::maintenance::MaintenanceSettings {
+            interval: Duration::from_secs(app_config.p2p.maintenance_interval_secs),
+            low_water: app_config.p2p.low_water,
+        },
+        peerstore.clone(),
+    ));
 
     // Create RabbitMQ exchanges/queues
     let mq_client = message_queue::new(&app_config).await?;
@@ -385,6 +392,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // If the HTTP server goes down, cancel the P2P loops as well
     let handles = vec![
         p2p_event_loop_handle,
+        maintenance_handle,
         mq_to_p2p_handle,
         p2p_to_mq_handle,
         grpc_handle,

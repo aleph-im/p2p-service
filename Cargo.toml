@@ -26,6 +26,7 @@ tokio = { version = "1.43.0", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["net", "sync", "time"] }
 tracing-subscriber = { version = "0.3.19", features = ["fmt"] }
 prometheus-client = { version = "0.23.0" }
+rand = "0.8"
 tonic = "0.12"
 prost = "0.13"
 async-stream = "0.3"

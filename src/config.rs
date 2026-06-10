@@ -46,6 +46,9 @@ pub struct P2PConfig {
     pub per_subnet_cap: usize,
     /// Maximum share of high_water that protected (preferred) peers may occupy.
     pub max_protected_share: f32,
+    /// Seconds between mesh maintenance passes (bootstrap anchoring,
+    /// preferred-peer dialing, low-water refill from the peerstore).
+    pub maintenance_interval_secs: u64,
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -78,6 +81,7 @@ impl Default for P2PConfig {
             high_water: 160,
             per_subnet_cap: 4,
             max_protected_share: 0.5,
+            maintenance_interval_secs: 30,
         }
     }
 }

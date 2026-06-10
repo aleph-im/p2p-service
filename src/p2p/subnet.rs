@@ -12,6 +12,8 @@ pub enum Verdict {
 /// Caps the number of connections per IPv4 /24 subnet. Exempt peers
 /// (preferred, bootstrap) are counted but never rejected. Non-IPv4
 /// addresses are always allowed (the service only listens on IPv4).
+/// Note: DNS-dialed connections (e.g. /dns/ bootstrap multiaddrs) carry
+/// no ip4 component post-dial and are neither counted nor capped.
 #[derive(Debug)]
 pub struct SubnetLimits {
     cap: usize,

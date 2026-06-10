@@ -14,7 +14,7 @@ use libp2p::gossipsub::{
 use libp2p::identify;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
-use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 use prometheus_client::metrics::gauge::Gauge;
@@ -130,6 +130,16 @@ pub struct NodeInfo {
     pub external_multiaddrs: Vec<Multiaddr>,
 }
 
+/// Point-in-time view of the connection table, used by the maintenance loop.
+#[derive(Debug, Clone)]
+pub struct NetworkSnapshot {
+    pub connected: HashSet<PeerId>,
+    pub n_connections: usize,
+    /// Preferred peers and their known addresses. Always empty for now;
+    /// filled from dial hints once preferred-peer support lands (A9).
+    pub preferred: Vec<(PeerId, Vec<Multiaddr>)>,
+}
+
 #[derive(Debug)]
 enum Command {
     StartListening {
@@ -152,6 +162,9 @@ enum Command {
         topic: gossipsub::IdentTopic,
         message: Vec<u8>,
         sender: CommandResponseSender,
+    },
+    NetworkSnapshot {
+        sender: CommandResponseSender<NetworkSnapshot>,
     },
 }
 
@@ -245,6 +258,12 @@ impl P2PClient {
             receiver,
         )
         .await
+    }
+
+    pub async fn network_snapshot(&mut self) -> Result<NetworkSnapshot, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_command_and_wait(Command::NetworkSnapshot { sender }, receiver)
+            .await
     }
 }
 
@@ -355,7 +374,10 @@ impl EventLoop {
                 debug!("Identify event: {:?}", other);
             }
             SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
+                peer_id,
+                endpoint,
+                connection_id,
+                ..
             } => {
                 self.connected_peers.inc();
                 if endpoint.is_dialer() {
@@ -384,18 +406,7 @@ impl EventLoop {
                     .or_default()
                     .push(remote_addr.clone());
 
-                let exempt = self.protected.contains(&peer_id);
-                let subnet_verdict = self.subnet_limits.on_connection(&remote_addr, exempt);
-                let over_high_water = self.connected.len() > self.settings.high_water && !exempt;
-                if subnet_verdict == Verdict::Reject || over_high_water {
-                    info!(
-                        "Disconnecting {} (subnet cap exceeded: {}, over high water: {})",
-                        peer_id,
-                        subnet_verdict == Verdict::Reject,
-                        over_high_water,
-                    );
-                    let _ = self.swarm.disconnect_peer_id(peer_id);
-                }
+                self.enforce_connection_limits(peer_id, connection_id, &remote_addr);
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -431,6 +442,36 @@ impl EventLoop {
                 );
             }
             other => debug!("Unhandled swarm event: {:?}", other),
+        }
+    }
+
+    /// Applies connection limits to a freshly established connection.
+    ///
+    /// Over the high watermark, the peer is the unit: all of its connections
+    /// are dropped. A subnet-cap violation only affects the address that was
+    /// connected, so only the violating connection is closed.
+    fn enforce_connection_limits(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+        remote_addr: &Multiaddr,
+    ) {
+        let exempt = self.protected.contains(&peer_id);
+        let subnet_verdict = self.subnet_limits.on_connection(remote_addr, exempt);
+        let over_high_water = self.connected.len() > self.settings.high_water && !exempt;
+        if over_high_water {
+            info!(
+                "Disconnecting {} (over high water; subnet cap exceeded: {})",
+                peer_id,
+                subnet_verdict == Verdict::Reject,
+            );
+            let _ = self.swarm.disconnect_peer_id(peer_id);
+        } else if subnet_verdict == Verdict::Reject {
+            info!(
+                "Closing connection {:?} to {} (subnet cap exceeded)",
+                connection_id, peer_id,
+            );
+            self.swarm.close_connection(connection_id);
         }
     }
 
@@ -494,6 +535,16 @@ impl EventLoop {
                     Ok(_) => sender.send(Ok(())),
                     Err(e) => sender.send(Err(Box::new(e))),
                 };
+            }
+            Command::NetworkSnapshot { sender } => {
+                let snapshot = NetworkSnapshot {
+                    connected: self.connected.keys().copied().collect(),
+                    // Peer count, not transport-connection count; good enough
+                    // for the maintenance loop's watermark decisions.
+                    n_connections: self.connected.len(),
+                    preferred: Vec::new(),
+                };
+                let _ = sender.send(Ok(snapshot));
             }
         }
     }
