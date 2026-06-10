@@ -1,11 +1,12 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prometheus_client::metrics::gauge::Gauge;
 
-use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::p2p::network::{self, NetworkSettings};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
 
@@ -63,6 +64,13 @@ async fn new_node_interops_with_libp2p_0_51_node() {
     let subscriptions = Arc::new(Subscriptions::new(1024));
     let (mut new_client, new_loop) = network::new(
         libp2p::identity::Keypair::generate_ed25519(),
+        NetworkSettings {
+            low_water: 80,
+            high_water: 160,
+            per_subnet_cap: 4,
+            max_protected_share: 0.5,
+        },
+        HashSet::new(),
         Gauge::default(),
         subscriptions.clone(),
         Arc::new(Mutex::new(PeerStore::default())),

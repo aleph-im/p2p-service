@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use aleph_p2p_service::grpc::proto::{
 };
 use aleph_p2p_service::grpc::GrpcService;
 use aleph_p2p_service::metrics::Metrics;
-use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::p2p::network::{self, NetworkSettings};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
 
@@ -18,6 +19,13 @@ async fn start_service() -> (AlephP2pClient<Channel>, String) {
     let subscriptions = Arc::new(Subscriptions::new(1024));
     let (mut client, event_loop) = network::new(
         libp2p::identity::Keypair::generate_ed25519(),
+        NetworkSettings {
+            low_water: 80,
+            high_water: 160,
+            per_subnet_cap: 4,
+            max_protected_share: 0.5,
+        },
+        HashSet::new(),
         Gauge::default(),
         subscriptions.clone(),
         Arc::new(Mutex::new(PeerStore::default())),

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -5,9 +6,18 @@ use libp2p::gossipsub::IdentTopic;
 use libp2p::identity;
 use prometheus_client::metrics::gauge::Gauge;
 
-use aleph_p2p_service::p2p::network;
+use aleph_p2p_service::p2p::network::{self, NetworkSettings};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
+
+fn default_settings() -> NetworkSettings {
+    NetworkSettings {
+        low_water: 80,
+        high_water: 160,
+        per_subnet_cap: 4,
+        max_protected_share: 0.5,
+    }
+}
 
 #[tokio::test]
 async fn two_new_nodes_exchange_gossipsub_messages() {
@@ -18,6 +28,8 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
 
     let (mut client_a, loop_a) = network::new(
         identity::Keypair::generate_ed25519(),
+        default_settings(),
+        HashSet::new(),
         Gauge::default(),
         subscriptions_a,
         Arc::new(Mutex::new(PeerStore::default())),
@@ -26,6 +38,8 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
     .unwrap();
     let (mut client_b, loop_b) = network::new(
         identity::Keypair::generate_ed25519(),
+        default_settings(),
+        HashSet::new(),
         Gauge::default(),
         subscriptions_b.clone(),
         Arc::new(Mutex::new(PeerStore::default())),

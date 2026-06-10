@@ -1,5 +1,5 @@
 use std::collections::hash_map::{DefaultHasher, Entry};
-use std::collections::{HashMap, LinkedList};
+use std::collections::{HashMap, HashSet, LinkedList};
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -20,12 +20,22 @@ use log::{debug, info, warn};
 use prometheus_client::metrics::gauge::Gauge;
 
 use crate::p2p::peerstore::PeerStore;
+use crate::p2p::subnet::{SubnetLimits, Verdict};
 
 use crate::subscriptions::{now_millis, Envelope, Subscriptions};
 
 /// Free-form protocol_version string exchanged in identify payloads;
 /// not the identify wire protocol name.
 pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
+
+/// Connection-limit parameters for the event loop.
+#[derive(Debug, Clone)]
+pub struct NetworkSettings {
+    pub low_water: usize,
+    pub high_water: usize,
+    pub per_subnet_cap: usize,
+    pub max_protected_share: f32,
+}
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
@@ -58,6 +68,8 @@ fn make_gossipsub_config() -> gossipsub::Config {
 
 pub async fn new(
     id_keys: identity::Keypair,
+    settings: NetworkSettings,
+    bootstrap_peers: HashSet<PeerId>,
     connected_peers: Gauge,
     subscriptions: Arc<Subscriptions>,
     peerstore: Arc<Mutex<PeerStore>>,
@@ -102,6 +114,8 @@ pub async fn new(
             subscriptions,
             connected_peers,
             peerstore,
+            settings,
+            bootstrap_peers,
         ),
     ))
 }
@@ -241,6 +255,15 @@ pub struct EventLoop {
     pending_dials: HashMap<PeerId, LinkedList<CommandResponseSender>>,
     connected_peers: Gauge,
     peerstore: Arc<Mutex<PeerStore>>,
+    settings: NetworkSettings,
+    subnet_limits: SubnetLimits,
+    /// Tracks the remote addresses per connected peer.
+    connected: HashMap<PeerId, Vec<Multiaddr>>,
+    /// Peers that are never disconnected for limit enforcement (bootstrap + preferred).
+    protected: HashSet<PeerId>,
+    /// Stored for A9: preferred peers will be unioned into `protected` when they are added.
+    #[allow(dead_code)]
+    bootstrap_peers: HashSet<PeerId>,
 }
 
 impl EventLoop {
@@ -250,7 +273,11 @@ impl EventLoop {
         subscriptions: Arc<Subscriptions>,
         connected_peers: Gauge,
         peerstore: Arc<Mutex<PeerStore>>,
+        settings: NetworkSettings,
+        bootstrap_peers: HashSet<PeerId>,
     ) -> Self {
+        let subnet_limits = SubnetLimits::new(settings.per_subnet_cap);
+        let protected = bootstrap_peers.clone();
         Self {
             swarm,
             command_receiver,
@@ -258,6 +285,11 @@ impl EventLoop {
             pending_dials: Default::default(),
             connected_peers,
             peerstore,
+            settings,
+            subnet_limits,
+            connected: HashMap::new(),
+            protected,
+            bootstrap_peers,
         }
     }
 
@@ -345,9 +377,40 @@ impl EventLoop {
                         }
                     }
                 }
+
+                let remote_addr = endpoint.get_remote_address().clone();
+                self.connected
+                    .entry(peer_id)
+                    .or_default()
+                    .push(remote_addr.clone());
+
+                let exempt = self.protected.contains(&peer_id);
+                let subnet_verdict = self.subnet_limits.on_connection(&remote_addr, exempt);
+                let over_high_water = self.connected.len() > self.settings.high_water && !exempt;
+                if subnet_verdict == Verdict::Reject || over_high_water {
+                    info!(
+                        "Disconnecting {} (subnet cap exceeded: {}, over high water: {})",
+                        peer_id,
+                        subnet_verdict == Verdict::Reject,
+                        over_high_water,
+                    );
+                    let _ = self.swarm.disconnect_peer_id(peer_id);
+                }
             }
-            SwarmEvent::ConnectionClosed { .. } => {
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                endpoint,
+                num_established,
+                ..
+            } => {
                 self.connected_peers.dec();
+                self.subnet_limits
+                    .on_disconnection(endpoint.get_remote_address());
+                if num_established == 0 {
+                    self.connected.remove(&peer_id);
+                } else if let Some(addrs) = self.connected.get_mut(&peer_id) {
+                    addrs.retain(|a| a != endpoint.get_remote_address());
+                }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {

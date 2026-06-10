@@ -18,7 +18,7 @@ use aleph_p2p_service::config::AppConfig;
 use aleph_p2p_service::http::AppState;
 use aleph_p2p_service::message_queue::{self, RabbitMqClient};
 use aleph_p2p_service::metrics::Metrics;
-use aleph_p2p_service::p2p::network::P2PClient;
+use aleph_p2p_service::p2p::network::{NetworkSettings, P2PClient};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::{Envelope, Subscriptions};
 use aleph_p2p_service::{http, p2p};
@@ -63,6 +63,20 @@ fn load_p2p_private_key(private_key_path: &PathBuf) -> identity::Keypair {
         });
 
     identity::Keypair::from(rsa_keypair)
+}
+
+/// Extract the PeerId from each bootstrap peer multiaddr (trailing /p2p/<id> component).
+fn bootstrap_peer_ids(peers: &[Multiaddr]) -> std::collections::HashSet<PeerId> {
+    peers
+        .iter()
+        .filter_map(|addr| {
+            let mut a = addr.clone();
+            match a.pop() {
+                Some(Protocol::P2p(peer_id)) => Some(peer_id),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 async fn dial_bootstrap_peers(network_client: &mut P2PClient, peers: &[Multiaddr]) {
@@ -231,8 +245,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peerstore.lock().expect("peerstore lock poisoned").len()
     );
 
+    let network_settings = NetworkSettings {
+        low_water: app_config.p2p.low_water,
+        high_water: app_config.p2p.high_water,
+        per_subnet_cap: app_config.p2p.per_subnet_cap,
+        max_protected_share: app_config.p2p.max_protected_share,
+    };
+    let bootstrap_peers = bootstrap_peer_ids(&app_config.p2p.peers);
+
     let (mut network_client, network_event_loop) = p2p::network::new(
         id_keys,
+        network_settings,
+        bootstrap_peers,
         metrics.connected_peers.clone(),
         subscriptions.clone(),
         peerstore.clone(),

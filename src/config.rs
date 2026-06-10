@@ -38,6 +38,14 @@ pub struct P2PConfig {
     pub nb_api_workers: usize,
     /// Path of the persisted peerstore file.
     pub peerstore_path: std::path::PathBuf,
+    /// Maintain at least this many connections (maintenance dials below it).
+    pub low_water: usize,
+    /// Disconnect non-protected peers above this many connections.
+    pub high_water: usize,
+    /// Maximum connections per IPv4 /24 subnet for non-protected peers.
+    pub per_subnet_cap: usize,
+    /// Maximum share of high_water that protected (preferred) peers may occupy.
+    pub max_protected_share: f32,
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -66,6 +74,10 @@ impl Default for P2PConfig {
             topics: vec!["ALIVE".to_owned(), "ALEPH-TEST".to_owned()],
             nb_api_workers: 4,
             peerstore_path: std::path::PathBuf::from("peerstore.json"),
+            low_water: 80,
+            high_water: 160,
+            per_subnet_cap: 4,
+            max_protected_share: 0.5,
         }
     }
 }
