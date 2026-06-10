@@ -1,7 +1,3 @@
-pub mod dial;
-mod error;
-pub mod identity;
-
 use crate::http::AppState;
 use actix_web::{web, HttpResponse, Result};
 use prometheus_client::encoding::text::encode;

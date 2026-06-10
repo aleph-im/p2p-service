@@ -12,7 +12,6 @@ chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.26", features = ["derive"] }
 env_logger = "0.11.6"
 futures = "0.3.31"
-lapin = "2.5.0"
 libp2p = { version = "0.56", features = ["dns", "gossipsub", "identify", "macros", "noise", "rsa", "serde", "tcp", "tokio", "yamux", "metrics"] }
 libp2p-mplex = "0.43"
 log = "0.4.22"

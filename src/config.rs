@@ -8,33 +8,17 @@ pub struct Port(pub u16);
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(default)]
 pub struct P2PConfig {
-    /// Port of the REST API dedicated to calls between peers.
-    pub http_port: Port,
     /// Port to use for P2P communication.
     pub port: Port,
-    /// Deprecated: no longer bound by the service, will be removed.
-    /// gRPC now listens on `grpc_port` (default 4030, the old control_port value)
-    /// and metrics/health on `metrics_port`.
-    pub control_port: Port,
     /// Port of the gRPC control/pubsub API.
     pub grpc_port: Port,
     /// Port of the HTTP metrics/health server.
     pub metrics_port: Port,
-    /// Response port for the P2P daemon.
-    pub listen_port: Port,
-    /// URL of the P2P daemon.
-    pub daemon_host: String,
-    /// P2P reconnection delay, in case of error.
-    pub reconnect_delay: u32,
-    /// Name of the "alive" topic.
-    pub alive_topic: String,
-    /// Protocols to use for P2P communication.
-    pub clients: Vec<String>,
     /// Bootstrap peers (multiaddr format).
     pub peers: Vec<Multiaddr>,
     /// Topics to subscribe to.
     pub topics: Vec<String>,
-    /// Number of API workers.
+    /// Number of HTTP metrics server workers.
     pub nb_api_workers: usize,
     /// Path of the persisted peerstore file.
     pub peerstore_path: std::path::PathBuf,
@@ -56,16 +40,9 @@ const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be v
 impl Default for P2PConfig {
     fn default() -> Self {
         P2PConfig {
-            http_port: Port(4024),
             port: Port(4025),
-            control_port: Port(4030),
             grpc_port: Port(4030),
             metrics_port: Port(4040),
-            listen_port: Port(4031),
-            daemon_host: "p2pd".to_owned(),
-            reconnect_delay: 60,
-            alive_topic: "ALIVE".to_owned(),
-            clients: vec!["http".to_owned()],
             peers: vec![
                 "/dns/api2.aleph.im/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
                     .parse()
@@ -94,41 +71,41 @@ pub struct SentryConfig {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(default)]
-pub struct RabbitMqConfig {
-    /// The hostname of the RabbitMQ instance.
-    pub host: String,
-    /// The AMQP port of the RabbitMQ instance.
-    pub port: Port,
-    /// Username.
-    pub username: String,
-    /// Password.
-    pub password: String,
-    /// Name of the exchange used to publish messages on the P2P network.
-    pub pub_exchange: String,
-    /// Name of the exchange used by the service to relay messages received from the P2P network.
-    pub sub_exchange: String,
-}
-
-impl Default for RabbitMqConfig {
-    fn default() -> Self {
-        RabbitMqConfig {
-            host: "127.0.0.1".to_owned(),
-            port: Port(5672),
-            username: "guest".to_owned(),
-            password: "guest".to_owned(),
-            pub_exchange: "p2p-publish".to_owned(),
-            sub_exchange: "p2p-subscribe".to_owned(),
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AppConfig {
     #[serde(default)]
     pub p2p: P2PConfig,
     #[serde(default)]
     pub sentry: SentryConfig,
-    #[serde(default)]
-    pub rabbitmq: RabbitMqConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_files_with_legacy_keys_still_parse() {
+        let yaml = r#"
+p2p:
+  http_port: 4024
+  port: 4025
+  control_port: 4030
+  listen_port: 4031
+  daemon_host: p2p-service
+  reconnect_delay: 60
+  alive_topic: ALIVE
+  clients: [http]
+  topics: [ALIVE, ALEPH-TEST]
+rabbitmq:
+  host: rabbitmq
+  username: aleph-p2p
+  password: secret
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).expect("legacy config should parse");
+        assert_eq!(config.p2p.port.0, 4025);
+        assert_eq!(config.p2p.grpc_port.0, 4030);
+        assert_eq!(
+            config.p2p.topics,
+            vec!["ALIVE".to_string(), "ALEPH-TEST".to_string()]
+        );
+    }
 }
