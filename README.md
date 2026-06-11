@@ -88,11 +88,11 @@ The peerstore file persists known peers and their dialable addresses across
 restarts, so a restarted node can refill its connection table without relying
 solely on the bootstrap peers.
 
-### Migration from pre-release-N versions
+### Migration from v1.x
 
 RabbitMQ support (the `p2p-publish`/`p2p-subscribe` exchanges) and the HTTP
 control endpoints (`/api/p2p/dial`, `/api/p2p/identify`) were removed in this
-release. pyaleph release N and later uses the gRPC API instead. Old
+release. pyaleph releases supporting the v2.0 gRPC API use it instead. Old
 configuration keys (`rabbitmq` section, `control_port`, `listen_port`, ...) are
 ignored harmlessly, so existing configuration files keep working.
 
