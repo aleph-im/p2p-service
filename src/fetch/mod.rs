@@ -1,6 +1,6 @@
-// NOTE: provider and requester land in later tasks; the declarations are
-// commented out so the crate compiles at every step.
-// pub mod provider;
+// NOTE: requester lands in a later task; the declaration is commented out
+// so the crate compiles at every step.
+pub mod provider;
 // pub mod requester;
 pub mod wire;
 
