@@ -57,6 +57,9 @@ impl ByteRateLimiter {
         if self.bytes_per_sec == 0 {
             return;
         }
+        // The bucket capacity is one second of budget; clamp the cost so a
+        // chunk larger than the capacity throttles instead of spinning forever.
+        let n = n.min(self.bytes_per_sec as usize);
         loop {
             let elapsed = self.last_refill.elapsed().as_secs_f64();
             self.available = (self.available + elapsed * self.bytes_per_sec as f64)
@@ -225,6 +228,13 @@ where
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_clamps_costs_larger_than_capacity() {
+        // A cost above one second of budget must throttle, not spin forever.
+        let mut limiter = ByteRateLimiter::new(1024);
+        limiter.acquire(64 * 1024).await;
+    }
 
     /// Serves HTTP requests: 200 with `content` for /api/v0/storage/raw/<known_hash>,
     /// 404 otherwise. Closes the connection after responding.
