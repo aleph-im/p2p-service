@@ -38,6 +38,8 @@ prost = "0.13"
 async-stream = "0.3"
 libp2p-stream = "0.4.0-alpha"
 tokio-util = { version = "0.7.18", features = ["compat"] }
+# Pinned to 0.12: reqwest 0.13 pulls time 0.3.48, which conflicts with the
+# cookie 0.16 dependency of actix-web. Revisit after an actix-web upgrade.
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 cbor4ii = { version = "1.2.2", features = ["serde1", "use_std"] }
 

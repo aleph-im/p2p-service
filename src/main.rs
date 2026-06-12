@@ -94,9 +94,7 @@ fn validate_config(app_config: &AppConfig) -> Result<(), Box<dyn std::error::Err
             "Invalid p2p config: maintenance_interval_secs must be at least 1 (0 hot-spins the command channel)".into(),
         );
     }
-    if !p2p.content_provider_url.is_empty()
-        && Url::parse(&p2p.content_provider_url).is_err()
-    {
+    if !p2p.content_provider_url.is_empty() && Url::parse(&p2p.content_provider_url).is_err() {
         return Err(format!(
             "p2p.content_provider_url is not a valid URL: {}",
             p2p.content_provider_url
