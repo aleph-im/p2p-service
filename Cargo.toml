@@ -7,7 +7,10 @@ rust-version = "1.88"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web = "4.9.0"
+# Default features disabled: we only serve /metrics and /health, and the
+# default "cookies" feature pulls cookie 0.16, which no longer compiles
+# against current versions of the time crate (E0119 on fresh resolutions).
+actix-web = { version = "4.9.0", default-features = false, features = ["macros"] }
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.26", features = ["derive"] }
 env_logger = "0.11.6"
@@ -21,6 +24,11 @@ sentry-actix = "0.36.0"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.135"
 serde_yaml = "0.9.34"
+# Not used directly: constrains the dependency tree. time 0.3.48 introduces
+# an impl that breaks trait coherence in several dependencies on fresh
+# resolutions (cookie, sentry-core, sentry-types, all failing with E0119).
+# Lift the cap once those dependencies have caught up.
+time = ">=0.3.36, <0.3.48"
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["net", "sync", "time"] }
 prometheus-client = { version = "0.23.0" }
