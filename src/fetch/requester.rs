@@ -109,6 +109,11 @@ pub async fn fetch_from_peers(
                 cooldowns.penalize(peer);
                 return Err(FetchError::Aborted(reason));
             }
+            Err(TryPeerError::ConsumerGone) => {
+                // Our gRPC consumer went away; the serving peer did nothing
+                // wrong, so it is not penalized.
+                return Err(FetchError::Aborted("consumer went away".into()));
+            }
         }
     }
     Err(FetchError::NotFound)
@@ -122,8 +127,12 @@ enum PeerOutcome {
 enum TryPeerError {
     /// Nothing was forwarded to the caller yet; the next peer can be tried.
     Retryable(String),
-    /// Content bytes were already forwarded; the fetch must abort.
+    /// Content bytes were already forwarded and the peer is at fault;
+    /// the fetch must abort.
     Fatal(String),
+    /// Content bytes were already forwarded but our own consumer dropped
+    /// the channel; the fetch must abort without penalizing the peer.
+    ConsumerGone,
 }
 
 async fn try_peer(
@@ -180,7 +189,7 @@ async fn try_peer(
     // From the first forwarded byte on, failures are fatal for this RPC.
     tx.send(FetchProgress::Header { size: header.size })
         .await
-        .map_err(|_| TryPeerError::Fatal("consumer went away".into()))?;
+        .map_err(|_| TryPeerError::ConsumerGone)?;
 
     let mut remaining = header.size;
     let mut buf = vec![0u8; CHUNK_SIZE];
@@ -199,7 +208,7 @@ async fn try_peer(
         metrics.fetch_bytes_fetched_total.inc_by(to_read as u64);
         tx.send(FetchProgress::Chunk(buf[..to_read].to_vec()))
             .await
-            .map_err(|_| TryPeerError::Fatal("consumer went away".into()))?;
+            .map_err(|_| TryPeerError::ConsumerGone)?;
         remaining -= to_read as u64;
     }
     Ok(PeerOutcome::Served)
