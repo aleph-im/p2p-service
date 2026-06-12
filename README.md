@@ -48,11 +48,26 @@ with pyaleph (the Core Channel Node software). The `AlephP2P` service provides:
   reported as truncated.
 * `GetPeers`: lists currently connected peers with their multiaddrs, preferred flag
   and gossipsub score.
+* `Fetch`: server-streaming RPC retrieving hash-addressed content from peers
+  over the `/aleph/fetch/1.0.0` libp2p protocol. The service tries caller
+  hints first, then connected peers (preferred first), with per-peer timeouts
+  and a total deadline. The caller (pyaleph) verifies the content hash; the
+  service only enforces size and rate limits.
 
 The node also subscribes at startup to every topic listed in the `p2p.topics`
 configuration variable.
 
-**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials.
+**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials. The `/aleph/fetch/1.0.0` libp2p protocol adds a remote surface, but serving inbound fetch requests is disabled unless `p2p.content_provider_url` is set.
+
+### Content fetch protocol
+
+Nodes exchange hash-addressed content over the `/aleph/fetch/1.0.0` libp2p
+protocol. On the provider side, an inbound fetch request for a hash is served
+by an HTTP GET to `p2p.content_provider_url` at `/api/v0/storage/raw/{hash}`
+(the local pyaleph API), streaming the response body back to the requesting
+peer. While `p2p.content_provider_url` is empty (the default), serving is
+disabled and the node answers every request with "not found"; existing
+deployments keep working without configuration changes.
 
 ### Metrics and health
 
@@ -82,6 +97,14 @@ All fields have defaults; an empty `p2p: {}` section is valid.
 | `p2p.max_protected_share` | `0.5` | Maximum share of `high_water` that preferred peers may occupy. |
 | `p2p.peerstore_path` | `peerstore.json` | Path of the persisted peerstore file. |
 | `p2p.maintenance_interval_secs` | `30` | Seconds between mesh maintenance passes. |
+| `p2p.content_provider_url` | empty (disabled) | Base URL of the local pyaleph API used to serve fetch requests, e.g. `http://pyaleph-api:4024`. |
+| `p2p.fetch_max_size_bytes` | `268435456` | Maximum content size served or accepted (256 MiB). |
+| `p2p.fetch_max_inbound_streams` | `32` | Global cap on concurrent inbound fetch streams. |
+| `p2p.fetch_max_inbound_streams_per_peer` | `4` | Per-peer cap on concurrent inbound fetch streams. |
+| `p2p.fetch_serve_bytes_per_sec` | `67108864` | Token-bucket limit on served bytes per second (0 = unlimited). |
+| `p2p.fetch_peer_timeout_secs` | `10` | Per-peer timeout for each fetch step. |
+| `p2p.fetch_total_deadline_secs` | `60` | Total deadline of one Fetch RPC. |
+| `p2p.fetch_max_peer_attempts` | `5` | Maximum peers tried per Fetch RPC. |
 | `sentry.dsn` | unset | Sentry DSN; error reporting is disabled when unset. |
 | `sentry.traces_sample_rate` | unset | Sentry traces sample rate. |
 
