@@ -23,7 +23,23 @@ use crate::fetch::wire::{read_frame, write_frame, FetchRequest, FetchResponseHea
 use crate::metrics::Metrics;
 
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
-const BACKEND_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-write timeout towards the remote peer. Without it, a requester that
+/// stops reading stalls write_all forever once the mux send window fills,
+/// holding its serving slot indefinitely.
+const SERVE_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Inactivity timeout on backend reads. A total request timeout would cap
+/// large transfers, since the body relay is paced by the remote peer.
+const BACKEND_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Wraps a write towards the remote peer in SERVE_WRITE_TIMEOUT.
+async fn timed<T>(
+    fut: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    timeout(SERVE_WRITE_TIMEOUT, fut)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "peer write timeout"))?
+}
 
 #[derive(Clone)]
 pub struct ProviderSettings {
@@ -81,7 +97,8 @@ pub async fn run(
     metrics: Metrics,
 ) {
     let http = reqwest::Client::builder()
-        .timeout(BACKEND_TIMEOUT)
+        .connect_timeout(BACKEND_CONNECT_TIMEOUT)
+        .read_timeout(BACKEND_READ_TIMEOUT)
         .build()
         .expect("reqwest client construction cannot fail with static settings");
     let global_slots = Arc::new(Semaphore::new(settings.max_inbound_streams));
@@ -152,11 +169,11 @@ where
 
     if !is_valid_item_hash(&request.item_hash) || request.offset != 0 {
         metrics.increment_event("fetch_serve_not_found");
-        return write_frame(&mut stream, &not_found).await;
+        return timed(write_frame(&mut stream, &not_found)).await;
     }
     let Some(base_url) = &settings.provider_url else {
         metrics.increment_event("fetch_serve_not_found");
-        return write_frame(&mut stream, &not_found).await;
+        return timed(write_frame(&mut stream, &not_found)).await;
     };
 
     let url = format!(
@@ -173,7 +190,7 @@ where
             );
             metrics.increment_event("fetch_serve_backend_error");
             metrics.fetch_serve_errors_total.inc();
-            return write_frame(&mut stream, &not_found).await;
+            return timed(write_frame(&mut stream, &not_found)).await;
         }
     };
 
@@ -186,11 +203,15 @@ where
                 "fetch_serve_backend_error"
             });
             metrics.fetch_serve_errors_total.inc();
-            return write_frame(&mut stream, &not_found).await;
+            return timed(write_frame(&mut stream, &not_found)).await;
         }
     };
 
-    write_frame(&mut stream, &FetchResponseHeader { found: true, size }).await?;
+    timed(write_frame(
+        &mut stream,
+        &FetchResponseHeader { found: true, size },
+    ))
+    .await?;
 
     let mut sent: u64 = 0;
     let mut body = response.bytes_stream();
@@ -205,7 +226,7 @@ where
             ));
         }
         limiter.lock().await.acquire(chunk.len()).await;
-        stream.write_all(&chunk).await?;
+        timed(stream.write_all(&chunk)).await?;
         sent += chunk.len() as u64;
         metrics.fetch_bytes_served_total.inc_by(chunk.len() as u64);
     }
@@ -215,7 +236,7 @@ where
             "backend served fewer bytes than announced",
         ));
     }
-    stream.flush().await?;
+    timed(stream.flush()).await?;
     metrics.fetch_served_total.inc();
     debug!(
         "fetch: served {} ({} bytes) to {}",

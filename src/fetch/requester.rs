@@ -105,6 +105,13 @@ pub async fn fetch_from_peers(
                 metrics.increment_event("fetch_peer_error");
                 cooldowns.penalize(peer);
             }
+            Err(TryPeerError::SkipNoPenalty(reason)) => {
+                debug!(
+                    "fetch: skipping peer {} for {}: {}",
+                    peer, item_hash, reason
+                );
+                metrics.increment_event("fetch_peer_skipped");
+            }
             Err(TryPeerError::Fatal(reason)) => {
                 cooldowns.penalize(peer);
                 return Err(FetchError::Aborted(reason));
@@ -127,6 +134,9 @@ enum PeerOutcome {
 enum TryPeerError {
     /// Nothing was forwarded to the caller yet; the next peer can be tried.
     Retryable(String),
+    /// Nothing was forwarded and the failure was not the peer's fault
+    /// (e.g. we could not even reach it); try the next peer, no cooldown.
+    SkipNoPenalty(String),
     /// Content bytes were already forwarded and the peer is at fault;
     /// the fetch must abort.
     Fatal(String),
@@ -145,13 +155,25 @@ async fn try_peer(
 ) -> Result<PeerOutcome, TryPeerError> {
     let retryable = TryPeerError::Retryable;
 
-    let stream = timeout(
+    let stream = match timeout(
         settings.peer_timeout,
         control.open_stream(peer, FETCH_PROTOCOL),
     )
     .await
-    .map_err(|_| retryable("open timeout".into()))?
-    .map_err(|e| retryable(format!("open failed: {}", e)))?;
+    {
+        Err(_) => return Err(retryable("open timeout".into())),
+        Ok(Err(libp2p_stream::OpenStreamError::UnsupportedProtocol(_))) => {
+            // A peer without fetch support; cool it down so transition-era fetches do
+            // not burn their attempts on old nodes on every RPC.
+            return Err(retryable("fetch protocol unsupported".into()));
+        }
+        Ok(Err(e)) => {
+            // Typically a dial failure for a hinted peer we are not
+            // connected to; not the peer's fault, skip without penalty.
+            return Err(TryPeerError::SkipNoPenalty(format!("open failed: {}", e)));
+        }
+        Ok(Ok(stream)) => stream,
+    };
     let mut stream = stream.compat();
 
     timeout(
@@ -284,6 +306,7 @@ mod tests {
         };
         let cooldowns = FetchCooldowns::default();
         let (tx, _rx) = mpsc::channel(16);
+        let metrics = Metrics::new();
 
         let result = fetch_from_peers(
             control,
@@ -291,19 +314,25 @@ mod tests {
             "a".repeat(64),
             settings,
             &cooldowns,
-            Metrics::new(),
+            metrics.clone(),
             tx,
         )
         .await;
         assert!(matches!(result, Err(FetchError::NotFound)));
 
-        // Only the first two candidates were attempted (and penalized);
-        // the attempt cap stopped the loop before the rest.
-        assert!(cooldowns.is_cooling(&candidates[0]));
-        assert!(cooldowns.is_cooling(&candidates[1]));
-        assert!(!cooldowns.is_cooling(&candidates[2]));
-        assert!(!cooldowns.is_cooling(&candidates[3]));
-        assert!(!cooldowns.is_cooling(&candidates[4]));
+        // Only the first two candidates were attempted; the attempt cap
+        // stopped the loop before the rest. Unreachable peers are skipped
+        // without a cooldown penalty (it is not the peer's fault).
+        let skipped = metrics
+            .p2p_events
+            .get_or_create(&crate::metrics::EventLabel {
+                event_type: "fetch_peer_skipped".to_string(),
+            })
+            .get();
+        assert_eq!(skipped, 2);
+        for candidate in &candidates {
+            assert!(!cooldowns.is_cooling(candidate));
+        }
     }
 
     #[tokio::test]
@@ -336,6 +365,7 @@ mod tests {
             max_peer_attempts: 1,
         };
         let (tx, _rx) = mpsc::channel(16);
+        let metrics = Metrics::new();
 
         let result = fetch_from_peers(
             control,
@@ -343,14 +373,22 @@ mod tests {
             "a".repeat(64),
             settings,
             &cooldowns,
-            Metrics::new(),
+            metrics.clone(),
             tx,
         )
         .await;
         assert!(matches!(result, Err(FetchError::NotFound)));
 
-        // The two cooling peers were skipped; the single attempt went to the
-        // third candidate, which then failed and was penalized.
-        assert!(cooldowns.is_cooling(&candidates[2]));
+        // The two cooling peers were skipped without consuming the single
+        // attempt, which went to the third candidate. Being unreachable,
+        // that candidate is skipped without a penalty.
+        let skipped = metrics
+            .p2p_events
+            .get_or_create(&crate::metrics::EventLabel {
+                event_type: "fetch_peer_skipped".to_string(),
+            })
+            .get();
+        assert_eq!(skipped, 1);
+        assert!(!cooldowns.is_cooling(&candidates[2]));
     }
 }
