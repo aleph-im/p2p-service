@@ -16,6 +16,7 @@ use aleph_p2p_service::p2p::network::{NetworkSettings, P2PClient};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
 use aleph_p2p_service::{http, p2p};
+use reqwest::Url;
 use tokio_stream::wrappers::TcpListenerStream;
 
 #[derive(Parser, Debug)]
@@ -92,6 +93,27 @@ fn validate_config(app_config: &AppConfig) -> Result<(), Box<dyn std::error::Err
         return Err(
             "Invalid p2p config: maintenance_interval_secs must be at least 1 (0 hot-spins the command channel)".into(),
         );
+    }
+    if !p2p.content_provider_url.is_empty()
+        && Url::parse(&p2p.content_provider_url).is_err()
+    {
+        return Err(format!(
+            "p2p.content_provider_url is not a valid URL: {}",
+            p2p.content_provider_url
+        )
+        .into());
+    }
+    if p2p.fetch_max_peer_attempts == 0 {
+        return Err("p2p.fetch_max_peer_attempts must be >= 1".into());
+    }
+    if p2p.fetch_peer_timeout_secs == 0 || p2p.fetch_total_deadline_secs == 0 {
+        return Err("p2p fetch timeouts must be >= 1 second".into());
+    }
+    if p2p.fetch_total_deadline_secs < p2p.fetch_peer_timeout_secs {
+        return Err("p2p.fetch_total_deadline_secs must be >= fetch_peer_timeout_secs".into());
+    }
+    if p2p.fetch_max_inbound_streams == 0 || p2p.fetch_max_inbound_streams_per_peer == 0 {
+        return Err("p2p fetch inbound stream limits must be >= 1".into());
     }
     Ok(())
 }

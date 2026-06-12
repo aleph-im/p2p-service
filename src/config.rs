@@ -41,6 +41,56 @@ pub struct P2PConfig {
     /// Seconds between mesh maintenance passes (bootstrap anchoring,
     /// preferred-peer dialing, low-water refill from the peerstore).
     pub maintenance_interval_secs: u64,
+    /// Base URL of the local pyaleph API used to serve inbound fetch
+    /// requests. Empty string disables the provider side.
+    #[serde(default = "default_content_provider_url")]
+    pub content_provider_url: String,
+    /// Maximum content size served or accepted by the fetch protocol.
+    #[serde(default = "default_fetch_max_size_bytes")]
+    pub fetch_max_size_bytes: u64,
+    /// Maximum concurrent inbound fetch streams (global).
+    #[serde(default = "default_fetch_max_inbound_streams")]
+    pub fetch_max_inbound_streams: usize,
+    /// Maximum concurrent inbound fetch streams per remote peer.
+    #[serde(default = "default_fetch_max_inbound_streams_per_peer")]
+    pub fetch_max_inbound_streams_per_peer: usize,
+    /// Token-bucket rate limit on bytes served, per second. 0 disables it.
+    #[serde(default = "default_fetch_serve_bytes_per_sec")]
+    pub fetch_serve_bytes_per_sec: u64,
+    /// Per-peer timeout for one fetch attempt step (open/header/chunk read).
+    #[serde(default = "default_fetch_peer_timeout_secs")]
+    pub fetch_peer_timeout_secs: u64,
+    /// Total wall-clock deadline for a Fetch RPC.
+    #[serde(default = "default_fetch_total_deadline_secs")]
+    pub fetch_total_deadline_secs: u64,
+    /// Maximum number of peers tried per Fetch RPC.
+    #[serde(default = "default_fetch_max_peer_attempts")]
+    pub fetch_max_peer_attempts: usize,
+}
+
+fn default_content_provider_url() -> String {
+    String::new()
+}
+fn default_fetch_max_size_bytes() -> u64 {
+    256 * 1024 * 1024
+}
+fn default_fetch_max_inbound_streams() -> usize {
+    32
+}
+fn default_fetch_max_inbound_streams_per_peer() -> usize {
+    4
+}
+fn default_fetch_serve_bytes_per_sec() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_fetch_peer_timeout_secs() -> u64 {
+    10
+}
+fn default_fetch_total_deadline_secs() -> u64 {
+    60
+}
+fn default_fetch_max_peer_attempts() -> usize {
+    5
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -68,6 +118,14 @@ impl Default for P2PConfig {
             per_subnet_cap: 4,
             max_protected_share: 0.5,
             maintenance_interval_secs: 30,
+            content_provider_url: default_content_provider_url(),
+            fetch_max_size_bytes: default_fetch_max_size_bytes(),
+            fetch_max_inbound_streams: default_fetch_max_inbound_streams(),
+            fetch_max_inbound_streams_per_peer: default_fetch_max_inbound_streams_per_peer(),
+            fetch_serve_bytes_per_sec: default_fetch_serve_bytes_per_sec(),
+            fetch_peer_timeout_secs: default_fetch_peer_timeout_secs(),
+            fetch_total_deadline_secs: default_fetch_total_deadline_secs(),
+            fetch_max_peer_attempts: default_fetch_max_peer_attempts(),
         }
     }
 }
@@ -125,5 +183,18 @@ rabbitmq:
             config.p2p.topics,
             vec!["ALIVE".to_string(), "ALEPH-TEST".to_string()]
         );
+    }
+
+    #[test]
+    fn fetch_defaults_are_sane() {
+        let config = P2PConfig::default();
+        assert!(config.content_provider_url.is_empty());
+        assert_eq!(config.fetch_max_size_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.fetch_max_inbound_streams, 32);
+        assert_eq!(config.fetch_max_inbound_streams_per_peer, 4);
+        assert_eq!(config.fetch_serve_bytes_per_sec, 64 * 1024 * 1024);
+        assert_eq!(config.fetch_peer_timeout_secs, 10);
+        assert_eq!(config.fetch_total_deadline_secs, 60);
+        assert_eq!(config.fetch_max_peer_attempts, 5);
     }
 }
