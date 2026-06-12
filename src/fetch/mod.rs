@@ -1,7 +1,5 @@
-// NOTE: requester lands in a later task; the declaration is commented out
-// so the crate compiles at every step.
 pub mod provider;
-// pub mod requester;
+pub mod requester;
 pub mod wire;
 
 use libp2p::StreamProtocol;

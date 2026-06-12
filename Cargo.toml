@@ -48,6 +48,8 @@ cbor4ii = { version = "1.2.2", features = ["serde1", "use_std"] }
 # gossipsub wire compatibility in tests/interop_old_libp2p.rs.
 libp2p-old = { package = "libp2p", version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "tcp", "tokio", "yamux"] }
 tempfile = "3"
+# test-util enables the paused clock used by the fetch cooldown tests.
+tokio = { version = "1.43.0", features = ["full", "test-util"] }
 
 [build-dependencies]
 tonic-build = "0.12"
