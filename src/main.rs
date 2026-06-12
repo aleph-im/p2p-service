@@ -15,7 +15,7 @@ use aleph_p2p_service::metrics::Metrics;
 use aleph_p2p_service::p2p::network::{NetworkSettings, P2PClient};
 use aleph_p2p_service::p2p::peerstore::PeerStore;
 use aleph_p2p_service::subscriptions::Subscriptions;
-use aleph_p2p_service::{http, p2p};
+use aleph_p2p_service::{fetch, http, p2p};
 use reqwest::Url;
 use tokio_stream::wrappers::TcpListenerStream;
 
@@ -189,8 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let bootstrap_peers = bootstrap_peer_ids(&app_config.p2p.peers);
 
-    // The fetch control is consumed by the Fetch RPC wiring in a later task.
-    let (mut network_client, network_event_loop, _fetch_control) = p2p::network::new(
+    let (mut network_client, network_event_loop, fetch_control) = p2p::network::new(
         id_keys,
         network_settings,
         bootstrap_peers,
@@ -243,11 +242,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peerstore.clone(),
     ));
 
+    // Provider side of the fetch protocol: serve inbound /aleph/fetch streams
+    // by proxying the local pyaleph API (disabled while the URL is empty).
+    let provider_settings = fetch::provider::ProviderSettings {
+        provider_url: if app_config.p2p.content_provider_url.is_empty() {
+            None
+        } else {
+            Some(app_config.p2p.content_provider_url.clone())
+        },
+        max_size_bytes: app_config.p2p.fetch_max_size_bytes,
+        max_inbound_streams: app_config.p2p.fetch_max_inbound_streams,
+        max_inbound_streams_per_peer: app_config.p2p.fetch_max_inbound_streams_per_peer,
+        serve_bytes_per_sec: app_config.p2p.fetch_serve_bytes_per_sec,
+    };
+    let fetch_settings = fetch::requester::FetchSettings {
+        peer_timeout: Duration::from_secs(app_config.p2p.fetch_peer_timeout_secs),
+        max_size_bytes: app_config.p2p.fetch_max_size_bytes,
+        max_peer_attempts: app_config.p2p.fetch_max_peer_attempts,
+    };
+    let incoming_fetch_streams = fetch_control
+        .clone()
+        .accept(fetch::FETCH_PROTOCOL)
+        .expect("fetch protocol registered twice");
+    let fetch_provider_handle = tokio::spawn(fetch::provider::run(
+        incoming_fetch_streams,
+        provider_settings,
+        metrics.clone(),
+    ));
+
     let grpc_service = aleph_p2p_service::grpc::GrpcService {
         client: network_client.clone(),
         subscriptions: subscriptions.clone(),
         local_peer_id: peer_id,
         metrics: metrics.clone(),
+        fetch_control,
+        fetch_settings,
+        fetch_total_deadline: Duration::from_secs(app_config.p2p.fetch_total_deadline_secs),
+        fetch_cooldowns: Arc::new(fetch::requester::FetchCooldowns::default()),
     };
     let grpc_bind_addr: std::net::SocketAddr = format!(
         "{}:{}",
@@ -329,6 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         maintenance_handle.abort_handle(),
         peerstore_flush_handle.abort_handle(),
         http_server_handle.abort_handle(),
+        fetch_provider_handle.abort_handle(),
     ];
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -340,6 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = maintenance_handle => { error!("Critical task 'maintenance' ended"); 1 }
         _ = peerstore_flush_handle => { error!("Critical task 'peerstore-flusher' ended"); 1 }
         _ = http_server_handle => { error!("Critical task 'metrics-http' ended"); 1 }
+        _ = fetch_provider_handle => { error!("Critical task 'fetch-provider' ended"); 1 }
         _ = tokio::signal::ctrl_c() => { info!("Shutdown signal received (SIGINT)"); 0 }
         _ = sigterm.recv() => { info!("Shutdown signal received (SIGTERM)"); 0 }
     };

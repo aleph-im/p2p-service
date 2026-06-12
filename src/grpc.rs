@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::Stream;
 use libp2p::{Multiaddr, PeerId};
@@ -23,6 +24,10 @@ pub struct GrpcService {
     pub subscriptions: Arc<Subscriptions>,
     pub local_peer_id: PeerId,
     pub metrics: Metrics,
+    pub fetch_control: libp2p_stream::Control,
+    pub fetch_settings: crate::fetch::requester::FetchSettings,
+    pub fetch_total_deadline: Duration,
+    pub fetch_cooldowns: Arc<crate::fetch::requester::FetchCooldowns>,
 }
 
 impl GrpcService {
@@ -289,13 +294,117 @@ impl AlephP2p for GrpcService {
         }))
     }
 
-    type FetchStream =
-        std::pin::Pin<Box<dyn futures::Stream<Item = Result<proto::FetchChunk, Status>> + Send>>;
+    type FetchStream = Pin<Box<dyn Stream<Item = Result<proto::FetchChunk, Status>> + Send>>;
 
     async fn fetch(
         &self,
-        _request: Request<proto::FetchRequest>,
+        request: Request<proto::FetchRequest>,
     ) -> Result<Response<Self::FetchStream>, Status> {
-        Err(Status::unimplemented("fetch is not available yet"))
+        let req = request.into_inner();
+        if !crate::fetch::is_valid_item_hash(&req.item_hash) {
+            return Err(Status::invalid_argument("invalid item hash"));
+        }
+        self.metrics.fetch_requests_total.inc();
+
+        // Candidate order: caller hints first (lenient parsing), then
+        // connected peers, preferred first, then by gossipsub score.
+        let mut candidates: Vec<PeerId> = Vec::new();
+        for hint in &req.preferred_peer_ids {
+            if let Ok(peer) = hint.parse::<PeerId>() {
+                if peer != self.local_peer_id && !candidates.contains(&peer) {
+                    candidates.push(peer);
+                }
+            }
+        }
+        let mut client = self.client.clone();
+        let mut connected = client
+            .get_peers()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        connected.sort_by(|a, b| {
+            b.preferred.cmp(&a.preferred).then(
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+        });
+        for peer in connected {
+            if peer.peer_id != self.local_peer_id && !candidates.contains(&peer.peer_id) {
+                candidates.push(peer.peer_id);
+            }
+        }
+        if candidates.is_empty() {
+            self.metrics.fetch_request_errors_total.inc();
+            return Err(Status::not_found("no peers available to fetch from"));
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let control = self.fetch_control.clone();
+        let settings = self.fetch_settings.clone();
+        let cooldowns = self.fetch_cooldowns.clone();
+        let task_metrics = self.metrics.clone();
+        let item_hash = req.item_hash.clone();
+        let deadline = self.fetch_total_deadline;
+        let fetch_task = tokio::spawn(async move {
+            tokio::time::timeout(
+                deadline,
+                crate::fetch::requester::fetch_from_peers(
+                    control,
+                    candidates,
+                    item_hash,
+                    settings,
+                    &cooldowns,
+                    task_metrics,
+                    tx,
+                ),
+            )
+            .await
+        });
+
+        let metrics = self.metrics.clone();
+        let stream = async_stream::stream! {
+            use crate::fetch::requester::{FetchError, FetchProgress};
+            let mut total_size: u64 = 0;
+            let mut sent_any = false;
+            let mut got_header = false;
+            while let Some(progress) = rx.recv().await {
+                match progress {
+                    FetchProgress::Header { size } => {
+                        total_size = size;
+                        got_header = true;
+                    }
+                    FetchProgress::Chunk(data) => {
+                        sent_any = true;
+                        yield Ok(proto::FetchChunk { data, total_size });
+                    }
+                }
+            }
+            match fetch_task.await {
+                Ok(Ok(Ok(()))) => {
+                    if got_header && !sent_any {
+                        // Zero-length content: emit one empty chunk so the
+                        // client can distinguish "found, empty" from errors.
+                        yield Ok(proto::FetchChunk { data: Vec::new(), total_size });
+                    }
+                }
+                Ok(Ok(Err(FetchError::NotFound))) => {
+                    metrics.fetch_request_errors_total.inc();
+                    yield Err(Status::not_found("content not found on any reachable peer"));
+                }
+                Ok(Ok(Err(FetchError::Aborted(reason)))) => {
+                    metrics.fetch_request_errors_total.inc();
+                    yield Err(Status::aborted(reason));
+                }
+                Ok(Err(_elapsed)) => {
+                    metrics.fetch_request_errors_total.inc();
+                    yield Err(Status::deadline_exceeded("fetch deadline exceeded"));
+                }
+                Err(join_error) => {
+                    metrics.fetch_request_errors_total.inc();
+                    yield Err(Status::internal(join_error.to_string()));
+                }
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
     }
 }

@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use tonic::transport::Channel;
 
+use aleph_p2p_service::fetch::requester::{FetchCooldowns, FetchSettings};
 use aleph_p2p_service::grpc::proto::aleph_p2p_client::AlephP2pClient;
 use aleph_p2p_service::grpc::proto::{
-    DialRequest, GetPeersRequest, IdentifyRequest, PreferredPeer, PublishRequest,
+    DialRequest, FetchRequest, GetPeersRequest, IdentifyRequest, PreferredPeer, PublishRequest,
     SetPreferredPeersRequest, SubscribeRequest,
 };
 use aleph_p2p_service::grpc::GrpcService;
@@ -17,7 +18,7 @@ use aleph_p2p_service::subscriptions::Subscriptions;
 
 async fn start_service() -> (AlephP2pClient<Channel>, String) {
     let subscriptions = Arc::new(Subscriptions::new(1024));
-    let (mut client, event_loop, _fetch_control) = network::new(
+    let (mut client, event_loop, fetch_control) = network::new(
         libp2p::identity::Keypair::generate_ed25519(),
         NetworkSettings {
             low_water: 80,
@@ -56,6 +57,14 @@ async fn start_service() -> (AlephP2pClient<Channel>, String) {
         subscriptions,
         local_peer_id: peer_id,
         metrics: Metrics::new(),
+        fetch_control,
+        fetch_settings: FetchSettings {
+            peer_timeout: Duration::from_secs(2),
+            max_size_bytes: 256 * 1024 * 1024,
+            max_peer_attempts: 5,
+        },
+        fetch_total_deadline: Duration::from_secs(5),
+        fetch_cooldowns: Arc::new(FetchCooldowns::default()),
     };
     tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -161,6 +170,27 @@ async fn publish_empty_topic_returns_invalid_argument() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn fetch_without_peers_is_not_found() {
+    let (mut grpc, _peer_id) = start_service().await;
+    let result = grpc
+        .fetch(FetchRequest {
+            item_hash: "a".repeat(64),
+            preferred_peer_ids: vec![],
+        })
+        .await
+        .map(|r| r.into_inner());
+    // The error can surface either at call time or on the first message.
+    let status = match result {
+        Err(status) => status,
+        Ok(mut stream) => match stream.message().await {
+            Err(status) => status,
+            Ok(msg) => panic!("expected NOT_FOUND, got {:?}", msg),
+        },
+    };
+    assert_eq!(status.code(), tonic::Code::NotFound);
 }
 
 #[tokio::test]
