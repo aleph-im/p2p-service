@@ -17,7 +17,7 @@ use aleph_p2p_service::subscriptions::Subscriptions;
 
 async fn start_service() -> (AlephP2pClient<Channel>, String) {
     let subscriptions = Arc::new(Subscriptions::new(1024));
-    let (mut client, event_loop) = network::new(
+    let (mut client, event_loop, _fetch_control) = network::new(
         libp2p::identity::Keypair::generate_ed25519(),
         NetworkSettings {
             low_water: 80,

@@ -61,7 +61,7 @@ async fn new_node_interops_with_libp2p_0_51_node() {
 
     // New node.
     let subscriptions = Arc::new(Subscriptions::new(1024));
-    let (mut new_client, new_loop) = network::new(
+    let (mut new_client, new_loop, _fetch_control) = network::new(
         libp2p::identity::Keypair::generate_ed25519(),
         NetworkSettings {
             low_water: 80,

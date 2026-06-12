@@ -189,7 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let bootstrap_peers = bootstrap_peer_ids(&app_config.p2p.peers);
 
-    let (mut network_client, network_event_loop) = p2p::network::new(
+    // The fetch control is consumed by the Fetch RPC wiring in a later task.
+    let (mut network_client, network_event_loop, _fetch_control) = p2p::network::new(
         id_keys,
         network_settings,
         bootstrap_peers,
