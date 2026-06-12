@@ -36,6 +36,10 @@ rand = "0.8"
 tonic = "0.12"
 prost = "0.13"
 async-stream = "0.3"
+libp2p-stream = "0.4.0-alpha"
+tokio-util = { version = "0.7.18", features = ["compat"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+cbor4ii = { version = "1.2.2", features = ["serde1", "use_std"] }
 
 [dev-dependencies]
 # Old libp2p stack used by deployed nodes; kept as a dev-dependency to prove

@@ -288,4 +288,14 @@ impl AlephP2p for GrpcService {
                 .collect(),
         }))
     }
+
+    type FetchStream =
+        std::pin::Pin<Box<dyn futures::Stream<Item = Result<proto::FetchChunk, Status>> + Send>>;
+
+    async fn fetch(
+        &self,
+        _request: Request<proto::FetchRequest>,
+    ) -> Result<Response<Self::FetchStream>, Status> {
+        Err(Status::unimplemented("fetch is not available yet"))
+    }
 }
