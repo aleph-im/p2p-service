@@ -37,10 +37,12 @@ tonic = "0.12"
 prost = "0.13"
 async-stream = "0.3"
 libp2p-stream = "0.4.0-alpha"
-tokio-util = { version = "0.7.18", features = ["compat"] }
+tokio-util = { version = "0.7.18", features = ["compat", "io"] }
+cid = "0.11"
+bytes = "1"
 # Pinned to 0.12: reqwest 0.13 requires time 0.3.48, which the workspace
 # caps below (see the time entry). Bump the two together.
-reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
 cbor4ii = { version = "1.2.2", features = ["serde1", "use_std"] }
 
 [dev-dependencies]

@@ -251,8 +251,10 @@ version = "2.0.0"
 dependencies = [
  "actix-web",
  "async-stream",
+ "bytes",
  "cbor4ii",
  "chrono",
+ "cid",
  "clap",
  "env_logger",
  "futures",
@@ -791,6 +793,17 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "cid"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21a304f95f84d169a6f31c4d0a30d784643aaa0bbc9c1e449a2c23e963ec4971"
+dependencies = [
+ "multibase",
+ "multihash 0.19.5",
+ "unsigned-varint 0.8.0",
 ]
 
 [[package]]

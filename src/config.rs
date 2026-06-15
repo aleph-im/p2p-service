@@ -41,10 +41,14 @@ pub struct P2PConfig {
     /// Seconds between mesh maintenance passes (bootstrap anchoring,
     /// preferred-peer dialing, low-water refill from the peerstore).
     pub maintenance_interval_secs: u64,
-    /// Base URL of the local pyaleph API used to serve inbound fetch
-    /// requests. Empty string disables the provider side.
-    #[serde(default = "default_content_provider_url")]
-    pub content_provider_url: String,
+    /// Path of pyaleph's content-addressed storage folder (flat files named by
+    /// item hash). Empty string disables filesystem serving.
+    #[serde(default)]
+    pub content_dir: String,
+    /// Base URL of the local Kubo (IPFS daemon) RPC API, e.g.
+    /// `http://ipfs:5001`. Empty string disables IPFS serving.
+    #[serde(default)]
+    pub ipfs_api_url: String,
     /// Maximum content size served or accepted by the fetch protocol.
     #[serde(default = "default_fetch_max_size_bytes")]
     pub fetch_max_size_bytes: u64,
@@ -68,9 +72,6 @@ pub struct P2PConfig {
     pub fetch_max_peer_attempts: usize,
 }
 
-fn default_content_provider_url() -> String {
-    String::new()
-}
 fn default_fetch_max_size_bytes() -> u64 {
     256 * 1024 * 1024
 }
@@ -118,7 +119,8 @@ impl Default for P2PConfig {
             per_subnet_cap: 4,
             max_protected_share: 0.5,
             maintenance_interval_secs: 30,
-            content_provider_url: default_content_provider_url(),
+            content_dir: String::new(),
+            ipfs_api_url: String::new(),
             fetch_max_size_bytes: default_fetch_max_size_bytes(),
             fetch_max_inbound_streams: default_fetch_max_inbound_streams(),
             fetch_max_inbound_streams_per_peer: default_fetch_max_inbound_streams_per_peer(),
@@ -188,7 +190,8 @@ rabbitmq:
     #[test]
     fn fetch_defaults_are_sane() {
         let config = P2PConfig::default();
-        assert!(config.content_provider_url.is_empty());
+        assert!(config.content_dir.is_empty());
+        assert!(config.ipfs_api_url.is_empty());
         assert_eq!(config.fetch_max_size_bytes, 256 * 1024 * 1024);
         assert_eq!(config.fetch_max_inbound_streams, 32);
         assert_eq!(config.fetch_max_inbound_streams_per_peer, 4);

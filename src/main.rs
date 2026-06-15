@@ -94,12 +94,8 @@ fn validate_config(app_config: &AppConfig) -> Result<(), Box<dyn std::error::Err
             "Invalid p2p config: maintenance_interval_secs must be at least 1 (0 hot-spins the command channel)".into(),
         );
     }
-    if !p2p.content_provider_url.is_empty() && Url::parse(&p2p.content_provider_url).is_err() {
-        return Err(format!(
-            "p2p.content_provider_url is not a valid URL: {}",
-            p2p.content_provider_url
-        )
-        .into());
+    if !p2p.ipfs_api_url.is_empty() && Url::parse(&p2p.ipfs_api_url).is_err() {
+        return Err(format!("p2p.ipfs_api_url is not a valid URL: {}", p2p.ipfs_api_url).into());
     }
     if p2p.fetch_max_peer_attempts == 0 {
         return Err("p2p.fetch_max_peer_attempts must be >= 1".into());
@@ -243,12 +239,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // Provider side of the fetch protocol: serve inbound /aleph/fetch streams
-    // by proxying the local pyaleph API (disabled while the URL is empty).
+    // from the local content store and/or local Kubo. Disabled when both
+    // content_dir and ipfs_api_url are empty.
     let provider_settings = fetch::provider::ProviderSettings {
-        provider_url: if app_config.p2p.content_provider_url.is_empty() {
+        content_dir: if app_config.p2p.content_dir.is_empty() {
             None
         } else {
-            Some(app_config.p2p.content_provider_url.clone())
+            Some(std::path::PathBuf::from(&app_config.p2p.content_dir))
+        },
+        ipfs_api_url: if app_config.p2p.ipfs_api_url.is_empty() {
+            None
+        } else {
+            Some(app_config.p2p.ipfs_api_url.clone())
         },
         max_size_bytes: app_config.p2p.fetch_max_size_bytes,
         max_inbound_streams: app_config.p2p.fetch_max_inbound_streams,

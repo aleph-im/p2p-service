@@ -1,5 +1,5 @@
 //! End-to-end coverage of the /aleph/fetch/1.0.0 protocol between two
-//! in-process nodes: node A serves content from a mock pyaleph backend,
+//! in-process nodes: node A serves content from a local filesystem store,
 //! node B fetches it over a libp2p stream (directly via the requester and
 //! through the gRPC Fetch handler).
 
@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use libp2p::{identity, Multiaddr, PeerId};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tonic::Request;
 
@@ -37,41 +36,12 @@ fn payload_300_kib() -> Vec<u8> {
     (0..300 * 1024).map(|i| (i % 251) as u8).collect()
 }
 
-/// Serves HTTP requests: 200 with `content` for /api/v0/storage/raw/<known_hash>,
-/// 404 otherwise. Closes the connection after responding.
-/// (Copied from the provider unit tests; integration tests cannot import
-/// #[cfg(test)] items.)
-async fn mock_backend(known_hash: String, content: Vec<u8>) -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let known_hash = known_hash.clone();
-            let content = content.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 4096];
-                let n = socket.read(&mut buf).await.unwrap_or(0);
-                let request = String::from_utf8_lossy(&buf[..n]).to_string();
-                let response = if request.contains(&known_hash) {
-                    let mut r = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                        content.len()
-                    )
-                    .into_bytes();
-                    r.extend_from_slice(&content);
-                    r
-                } else {
-                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                        .to_vec()
-                };
-                let _ = socket.write_all(&response).await;
-            });
-        }
-    });
-    addr
+/// Writes `content` to `dir/known_hash` so the provider can serve it from
+/// the filesystem store.
+async fn write_content(dir: &std::path::Path, known_hash: &str, content: &[u8]) {
+    tokio::fs::write(dir.join(known_hash), content)
+        .await
+        .unwrap();
 }
 
 struct Node {
@@ -116,9 +86,10 @@ async fn listen_addr(node: &mut Node) -> (PeerId, Multiaddr) {
     panic!("node never reported a listen address within 5 seconds");
 }
 
-fn provider_settings(provider_url: Option<String>) -> provider::ProviderSettings {
+fn provider_settings(content_dir: Option<std::path::PathBuf>) -> provider::ProviderSettings {
     provider::ProviderSettings {
-        provider_url,
+        content_dir,
+        ipfs_api_url: None,
         max_size_bytes: 1024 * 1024,
         max_inbound_streams: 4,
         max_inbound_streams_per_peer: 2,
@@ -134,14 +105,21 @@ fn fetch_settings() -> FetchSettings {
     }
 }
 
-/// Two connected nodes: A serves `content` for `known_hash` from a mock
-/// backend, B is dialed in and ready to fetch. Node A is returned too so its
-/// command channel (and with it the event loop) stays alive for the test.
-async fn connected_pair(known_hash: String, content: Vec<u8>) -> (Node, PeerId, Node) {
+/// Two connected nodes: A serves `content` for `known_hash` from the local
+/// filesystem store, B is dialed in and ready to fetch. Node A is returned
+/// too so its command channel (and with it the event loop) stays alive for
+/// the test. The returned `tempfile::TempDir` must be kept alive for the
+/// duration of the test.
+async fn connected_pair(
+    known_hash: String,
+    content: Vec<u8>,
+) -> (Node, PeerId, Node, tempfile::TempDir) {
     let mut node_a = start_node().await;
     let mut node_b = start_node().await;
 
-    let backend_addr = mock_backend(known_hash, content).await;
+    let dir = tempfile::tempdir().unwrap();
+    write_content(dir.path(), &known_hash, &content).await;
+
     let incoming = node_a
         .control
         .clone()
@@ -149,7 +127,7 @@ async fn connected_pair(known_hash: String, content: Vec<u8>) -> (Node, PeerId, 
         .expect("fetch protocol registered twice");
     tokio::spawn(provider::run(
         incoming,
-        provider_settings(Some(format!("http://{}", backend_addr))),
+        provider_settings(Some(dir.path().to_path_buf())),
         Metrics::new(),
     ));
 
@@ -163,14 +141,14 @@ async fn connected_pair(known_hash: String, content: Vec<u8>) -> (Node, PeerId, 
     // negotiation a moment before opening fetch streams.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    (node_a, peer_a, node_b)
+    (node_a, peer_a, node_b, dir)
 }
 
 #[tokio::test]
 async fn fetch_roundtrip() {
     let hash = "a".repeat(64);
     let content = payload_300_kib();
-    let (_node_a, peer_a, node_b) = connected_pair(hash.clone(), content.clone()).await;
+    let (_node_a, peer_a, node_b, _dir) = connected_pair(hash.clone(), content.clone()).await;
 
     let (tx, mut rx) = mpsc::channel(16);
     let collector = tokio::spawn(async move {
@@ -216,7 +194,8 @@ async fn fetch_roundtrip() {
 #[tokio::test]
 async fn fetch_not_found_falls_through() {
     let known_hash = "a".repeat(64);
-    let (_node_a, peer_a, node_b) = connected_pair(known_hash, b"some content".to_vec()).await;
+    let (_node_a, peer_a, node_b, _dir) =
+        connected_pair(known_hash, b"some content".to_vec()).await;
 
     let (tx, mut rx) = mpsc::channel(16);
     let cooldowns = FetchCooldowns::default();
@@ -245,7 +224,7 @@ async fn fetch_not_found_falls_through() {
 async fn fetch_grpc_end_to_end() {
     let hash = "a".repeat(64);
     let content = payload_300_kib();
-    let (_node_a, peer_a, node_b) = connected_pair(hash.clone(), content.clone()).await;
+    let (_node_a, peer_a, node_b, _dir) = connected_pair(hash.clone(), content.clone()).await;
 
     let local_peer_id = node_b.client.clone().identify().await.unwrap().peer_id;
     let service = GrpcService {

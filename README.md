@@ -57,17 +57,25 @@ with pyaleph (the Core Channel Node software). The `AlephP2P` service provides:
 The node also subscribes at startup to every topic listed in the `p2p.topics`
 configuration variable.
 
-**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials. The `/aleph/fetch/1.0.0` libp2p protocol adds a remote surface, but serving inbound fetch requests is disabled unless `p2p.content_provider_url` is set.
+**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials. The `/aleph/fetch/1.0.0` libp2p protocol adds a remote surface, but serving inbound fetch requests is disabled unless at least one of `p2p.content_dir` or `p2p.ipfs_api_url` is set.
 
 ### Content fetch protocol
 
 Nodes exchange hash-addressed content over the `/aleph/fetch/1.0.0` libp2p
-protocol. On the provider side, an inbound fetch request for a hash is served
-by an HTTP GET to `p2p.content_provider_url` at `/api/v0/storage/raw/{hash}`
-(the local pyaleph API), streaming the response body back to the requesting
-peer. While `p2p.content_provider_url` is empty (the default), serving is
-disabled and the node answers every request with "not found"; existing
-deployments keep working without configuration changes.
+protocol. On the provider side, an inbound fetch request is resolved from
+local sources in order:
+
+1. **Filesystem** (`p2p.content_dir`): pyaleph stores content as flat files
+   named by their item hash in a content-addressed folder. If the file is
+   present and within the size limit it is streamed to the requester.
+2. **Local Kubo** (`p2p.ipfs_api_url`): if the item hash parses as a CID,
+   the local IPFS daemon (Kubo) is queried with `offline=true`. This flag
+   instructs Kubo to return an error instead of fetching the block from the
+   public IPFS network; only locally resident blocks are served.
+3. **Not found**: the requester falls through to its own IPFS resolution path.
+
+Serving is disabled when both `content_dir` and `ipfs_api_url` are empty
+(the default); existing deployments keep working without configuration changes.
 
 ### Metrics and health
 
@@ -97,7 +105,8 @@ All fields have defaults; an empty `p2p: {}` section is valid.
 | `p2p.max_protected_share` | `0.5` | Maximum share of `high_water` that preferred peers may occupy. |
 | `p2p.peerstore_path` | `peerstore.json` | Path of the persisted peerstore file. |
 | `p2p.maintenance_interval_secs` | `30` | Seconds between mesh maintenance passes. |
-| `p2p.content_provider_url` | empty (disabled) | Base URL of the local pyaleph API used to serve fetch requests, e.g. `http://pyaleph-api:4024`. |
+| `p2p.content_dir` | empty (disabled) | Path of pyaleph's content-addressed storage folder (flat files named by item hash). Empty disables filesystem serving. |
+| `p2p.ipfs_api_url` | empty (disabled) | Base URL of the local Kubo (IPFS daemon) RPC API, e.g. `http://ipfs:5001`. Empty disables IPFS serving. Kubo is always queried with `offline=true`; it will never fetch blocks from the public network on behalf of an inbound request. |
 | `p2p.fetch_max_size_bytes` | `268435456` | Maximum content size served or accepted (256 MiB). |
 | `p2p.fetch_max_inbound_streams` | `32` | Global cap on concurrent inbound fetch streams. |
 | `p2p.fetch_max_inbound_streams_per_peer` | `4` | Per-peer cap on concurrent inbound fetch streams. |
