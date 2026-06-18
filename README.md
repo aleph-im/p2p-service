@@ -48,11 +48,40 @@ with pyaleph (the Core Channel Node software). The `AlephP2P` service provides:
   reported as truncated.
 * `GetPeers`: lists currently connected peers with their multiaddrs, preferred flag
   and gossipsub score.
+* `Fetch`: server-streaming RPC retrieving hash-addressed content from peers
+  over the `/aleph/fetch/1.0.0` libp2p protocol. The service tries caller
+  hints first, then connected peers (preferred first), with per-peer timeouts
+  and a total deadline. The caller (pyaleph) verifies the content hash; the
+  service only enforces size and rate limits.
 
 The node also subscribes at startup to every topic listed in the `p2p.topics`
 configuration variable.
 
-**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials.
+**Security note:** The gRPC API is unauthenticated and intended for deployment-internal use only. Bind it to localhost or an internal container network and firewall the port (the demo compose binds `127.0.0.1`). Anyone with network access to the port can publish messages, change the preferred peer set, or trigger dials. The `/aleph/fetch/1.0.0` libp2p protocol adds a remote surface, but serving inbound fetch requests is disabled unless at least one of `p2p.content_dir` or `p2p.ipfs_api_url` is set.
+
+### Content fetch protocol
+
+Nodes exchange hash-addressed content over the `/aleph/fetch/1.0.0` libp2p
+protocol. On the provider side, an inbound fetch request is resolved from
+local sources in order:
+
+1. **Filesystem** (`p2p.content_dir`): pyaleph stores content as flat files
+   named by their item hash in a content-addressed folder. If the file is
+   present and within the size limit it is streamed to the requester.
+2. **Kubo** (`p2p.ipfs_api_url`): if the item hash parses as a CID, the IPFS
+   daemon (Kubo) is queried with `offline=true`. This flag instructs Kubo to
+   return an error instead of fetching the block from the public IPFS network;
+   only locally resident blocks are served. Point `ipfs_api_url` at the node
+   that actually holds the pinned content: the local daemon in a single-node
+   setup, or the pinning node if pyaleph offloads IPFS storage (it must match
+   pyaleph's `ipfs.pinning` endpoint). The node is queried read-only (`cat`,
+   `files/stat`); the provider never pins or writes.
+3. **Not found**: the requester falls through to its own IPFS resolution path.
+
+Serving is disabled when both `content_dir` and `ipfs_api_url` are empty
+(the default); existing deployments keep working without configuration changes.
+Filesystem serving is independent of IPFS pinning, so a node that offloads
+pinning still serves its locally stored (e.g. STORE) content from `content_dir`.
 
 ### Metrics and health
 
@@ -82,6 +111,15 @@ All fields have defaults; an empty `p2p: {}` section is valid.
 | `p2p.max_protected_share` | `0.5` | Maximum share of `high_water` that preferred peers may occupy. |
 | `p2p.peerstore_path` | `peerstore.json` | Path of the persisted peerstore file. |
 | `p2p.maintenance_interval_secs` | `30` | Seconds between mesh maintenance passes. |
+| `p2p.content_dir` | empty (disabled) | Path of pyaleph's content-addressed storage folder (flat files named by item hash). Empty disables filesystem serving. |
+| `p2p.ipfs_api_url` | empty (disabled) | Base URL of the Kubo (IPFS daemon) RPC API that holds the node's pinned content, e.g. `http://ipfs:5001`. Use the pinning node here if pyaleph offloads IPFS storage (match `ipfs.pinning`). Empty disables IPFS serving. Kubo is always queried with `offline=true`; it will never fetch blocks from the public network on behalf of an inbound request. |
+| `p2p.fetch_max_size_bytes` | `268435456` | Maximum content size served or accepted (256 MiB). |
+| `p2p.fetch_max_inbound_streams` | `32` | Global cap on concurrent inbound fetch streams. |
+| `p2p.fetch_max_inbound_streams_per_peer` | `4` | Per-peer cap on concurrent inbound fetch streams. |
+| `p2p.fetch_serve_bytes_per_sec` | `67108864` | Token-bucket limit on served bytes per second (0 = unlimited). |
+| `p2p.fetch_peer_timeout_secs` | `10` | Per-peer timeout for each fetch step. |
+| `p2p.fetch_total_deadline_secs` | `60` | Total deadline of one Fetch RPC. |
+| `p2p.fetch_max_peer_attempts` | `5` | Maximum peers tried per Fetch RPC. |
 | `sentry.dsn` | unset | Sentry DSN; error reporting is disabled when unset. |
 | `sentry.traces_sample_rate` | unset | Sentry traces sample rate. |
 

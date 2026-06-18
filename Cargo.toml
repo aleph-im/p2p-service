@@ -36,12 +36,22 @@ rand = "0.8"
 tonic = "0.12"
 prost = "0.13"
 async-stream = "0.3"
+libp2p-stream = "0.4.0-alpha"
+tokio-util = { version = "0.7.18", features = ["compat", "io"] }
+cid = "0.11"
+bytes = "1"
+# Pinned to 0.12: reqwest 0.13 requires time 0.3.48, which the workspace
+# caps below (see the time entry). Bump the two together.
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
+cbor4ii = { version = "1.2.2", features = ["serde1", "use_std"] }
 
 [dev-dependencies]
 # Old libp2p stack used by deployed nodes; kept as a dev-dependency to prove
 # gossipsub wire compatibility in tests/interop_old_libp2p.rs.
 libp2p-old = { package = "libp2p", version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "tcp", "tokio", "yamux"] }
 tempfile = "3"
+# test-util enables the paused clock used by the fetch cooldown tests.
+tokio = { version = "1.43.0", features = ["full", "test-util"] }
 
 [build-dependencies]
 tonic-build = "0.12"

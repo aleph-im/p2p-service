@@ -47,6 +47,7 @@ pub struct NetworkSettings {
 pub struct Behaviour {
     gossipsub: GossipsubBehaviour,
     identify: identify::Behaviour,
+    stream: libp2p_stream::Behaviour,
 }
 
 fn make_gossipsub_config() -> gossipsub::Config {
@@ -86,7 +87,7 @@ pub async fn new(
     metrics: Metrics,
     subscriptions: Arc<Subscriptions>,
     peerstore: Arc<Mutex<PeerStore>>,
-) -> Result<(P2PClient, EventLoop), Box<dyn Error>> {
+) -> Result<(P2PClient, EventLoop, libp2p_stream::Control), Box<dyn Error>> {
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
         .with_tcp(
@@ -121,12 +122,17 @@ pub async fn new(
             Behaviour {
                 gossipsub,
                 identify,
+                stream: libp2p_stream::Behaviour::new(),
             }
         })?
         // Gossipsub mesh links see periodic traffic; non-mesh connections
         // must survive between heartbeats and maintenance ticks.
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(300)))
         .build();
+
+    // Handle for opening outbound fetch streams; usable independently of the
+    // EventLoop because libp2p-stream drives its own protocol handling.
+    let fetch_control = swarm.behaviour().stream.new_control();
 
     let (command_sender, command_receiver) = mpsc::channel(0);
     Ok((
@@ -142,6 +148,7 @@ pub async fn new(
             settings,
             bootstrap_peers,
         ),
+        fetch_control,
     ))
 }
 
@@ -430,6 +437,9 @@ impl EventLoop {
             SwarmEvent::Behaviour(BehaviourEvent::Identify(other)) => {
                 debug!("Identify event: {:?}", other);
             }
+            // The stream behaviour emits no events; streams are handled
+            // through the Control returned by `new`.
+            SwarmEvent::Behaviour(BehaviourEvent::Stream(())) => {}
             SwarmEvent::ConnectionEstablished {
                 peer_id,
                 endpoint,

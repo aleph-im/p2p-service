@@ -24,6 +24,15 @@ pub struct Metrics {
 
     // HTTP metrics
     pub http_requests_total: Counter,
+
+    // Fetch protocol (provider side)
+    pub fetch_served_total: Counter,
+    pub fetch_serve_errors_total: Counter,
+    pub fetch_bytes_served_total: Counter,
+    // Fetch protocol (requester side)
+    pub fetch_requests_total: Counter,
+    pub fetch_request_errors_total: Counter,
+    pub fetch_bytes_fetched_total: Counter,
 }
 
 impl Default for Metrics {
@@ -78,6 +87,43 @@ impl Metrics {
             http_requests_total.clone(),
         );
 
+        let fetch_served_total = Counter::default();
+        registry.register(
+            "fetch_served_total",
+            "Inbound fetch requests answered with content",
+            fetch_served_total.clone(),
+        );
+        let fetch_serve_errors_total = Counter::default();
+        registry.register(
+            "fetch_serve_errors_total",
+            "Inbound fetch requests rejected or failed (not found, over limit, backend error)",
+            fetch_serve_errors_total.clone(),
+        );
+        let fetch_bytes_served_total = Counter::default();
+        registry.register(
+            "fetch_bytes_served_total",
+            "Content bytes served to remote peers over the fetch protocol",
+            fetch_bytes_served_total.clone(),
+        );
+        let fetch_requests_total = Counter::default();
+        registry.register(
+            "fetch_requests_total",
+            "Outbound Fetch RPCs started",
+            fetch_requests_total.clone(),
+        );
+        let fetch_request_errors_total = Counter::default();
+        registry.register(
+            "fetch_request_errors_total",
+            "Outbound Fetch RPCs that failed (not found, deadline, aborted)",
+            fetch_request_errors_total.clone(),
+        );
+        let fetch_bytes_fetched_total = Counter::default();
+        registry.register(
+            "fetch_bytes_fetched_total",
+            "Content bytes fetched from remote peers over the fetch protocol",
+            fetch_bytes_fetched_total.clone(),
+        );
+
         Self {
             registry: Arc::new(registry),
             connected_peers,
@@ -86,6 +132,12 @@ impl Metrics {
             p2p_events,
             memory_usage_bytes,
             http_requests_total,
+            fetch_served_total,
+            fetch_serve_errors_total,
+            fetch_bytes_served_total,
+            fetch_requests_total,
+            fetch_request_errors_total,
+            fetch_bytes_fetched_total,
         }
     }
 

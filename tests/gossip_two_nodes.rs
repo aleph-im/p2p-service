@@ -26,7 +26,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
     let subscriptions_a = Arc::new(Subscriptions::new(1024));
     let subscriptions_b = Arc::new(Subscriptions::new(1024));
 
-    let (mut client_a, loop_a) = network::new(
+    let (mut client_a, loop_a, _fetch_control_a) = network::new(
         identity::Keypair::generate_ed25519(),
         default_settings(),
         HashSet::new(),
@@ -36,7 +36,7 @@ async fn two_new_nodes_exchange_gossipsub_messages() {
     )
     .await
     .unwrap();
-    let (mut client_b, loop_b) = network::new(
+    let (mut client_b, loop_b, _fetch_control_b) = network::new(
         identity::Keypair::generate_ed25519(),
         default_settings(),
         HashSet::new(),
