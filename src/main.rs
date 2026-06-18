@@ -228,8 +228,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_peer_id: peer_id,
         metrics: metrics.clone(),
     };
-    let grpc_bind_addr: std::net::SocketAddr =
-        format!("0.0.0.0:{}", app_config.p2p.grpc_port.0).parse()?;
+    let grpc_bind_addr: std::net::SocketAddr = format!(
+        "{}:{}",
+        app_config.p2p.grpc_host, app_config.p2p.grpc_port.0
+    )
+    .parse()?;
     let grpc_listener = tokio::net::TcpListener::bind(grpc_bind_addr).await?;
     info!("gRPC server listening on: {}", grpc_listener.local_addr()?);
     let grpc_handle = tokio::spawn(async move {

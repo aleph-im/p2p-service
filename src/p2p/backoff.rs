@@ -110,6 +110,18 @@ mod tests {
         assert!(backoff.ready(&peer, now + Duration::from_secs(91)));
     }
 
+    /// Test 4: a success resets the backoff; the peer is ready immediately.
+    #[test]
+    fn success_resets_backoff() {
+        let mut backoff = DialBackoff::new(Duration::from_secs(10), Duration::from_secs(3600));
+        let peer = PeerId::random();
+        let now = Instant::now();
+        backoff.record_failure(peer, now);
+        assert!(!backoff.ready(&peer, now));
+        backoff.record_success(&peer);
+        assert!(backoff.ready(&peer, now));
+    }
+
     /// Test 5: prune drops entries whose backoff expired more than one cap
     /// interval ago; the peer stays ready and the map is emptied.
     #[test]
@@ -124,17 +136,5 @@ mod tests {
         backoff.prune(later);
         assert!(backoff.ready(&peer, later));
         assert_eq!(backoff.len(), 0);
-    }
-
-    /// Test 4: a success resets the backoff; the peer is ready immediately.
-    #[test]
-    fn success_resets_backoff() {
-        let mut backoff = DialBackoff::new(Duration::from_secs(10), Duration::from_secs(3600));
-        let peer = PeerId::random();
-        let now = Instant::now();
-        backoff.record_failure(peer, now);
-        assert!(!backoff.ready(&peer, now));
-        backoff.record_success(&peer);
-        assert!(backoff.ready(&peer, now));
     }
 }

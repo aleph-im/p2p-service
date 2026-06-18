@@ -70,7 +70,8 @@ All fields have defaults; an empty `p2p: {}` section is valid.
 | Field | Default | Description |
 | --- | --- | --- |
 | `p2p.port` | `4025` | TCP port for P2P (libp2p) communication. |
-| `p2p.grpc_port` | `4030` | Port of the gRPC control/pubsub API. |
+| `p2p.grpc_host` | `0.0.0.0` | Interface the gRPC API binds to. The API is unauthenticated; set to `127.0.0.1` when the client is co-located, or keep `0.0.0.0` for cross-container clients behind a firewall. |
+| `p2p.grpc_port` | `4030` | Port of the gRPC control/pubsub API. Legacy alias: `control_port`. |
 | `p2p.metrics_port` | `4040` | Port of the HTTP metrics/health server. |
 | `p2p.peers` | aleph.im bootstrap nodes | Bootstrap peers, multiaddr format with trailing `/p2p/<peer id>`. |
 | `p2p.topics` | `[ALIVE, ALEPH-TEST]` | Gossipsub topics to subscribe to at startup. |
@@ -92,14 +93,16 @@ solely on the bootstrap peers.
 
 RabbitMQ support (the `p2p-publish`/`p2p-subscribe` exchanges) and the HTTP
 control endpoints (`/api/p2p/dial`, `/api/p2p/identify`) were removed in this
-release. pyaleph releases supporting the v2.0 gRPC API use it instead. Old
-configuration keys (`rabbitmq` section, `control_port`, `listen_port`, ...) are
-ignored harmlessly, so existing configuration files keep working.
+release. pyaleph releases supporting the v2.0 gRPC API use it instead. The
+legacy `control_port` key is accepted as an alias for `grpc_port`, so a
+customized port carries over. Other removed keys (`rabbitmq` section,
+`listen_port`, `http_port`, `daemon_host`, ...) are ignored harmlessly, so
+existing configuration files keep working.
 
-Prometheus scrape targets must be moved from the old `control_port` to
+Prometheus scrape targets must be moved from the old HTTP control port to
 `metrics_port` (default 4040).
 
-Operators who had customized `control_port` must now set `grpc_port` explicitly; the old key is ignored. It is also recommended to point `peerstore_path` at a mounted volume so that known peers survive container recreation (the default `peerstore.json` lands in the container filesystem and is lost on recreation).
+It is recommended to point `peerstore_path` at a mounted volume so that known peers survive container recreation (the default `peerstore.json` lands in the container filesystem and is lost on recreation).
 
 ## Building
 

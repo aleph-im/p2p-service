@@ -518,9 +518,11 @@ impl EventLoop {
 
     /// Applies connection limits to a freshly established connection.
     ///
-    /// Over the high watermark, the peer is the unit: all of its connections
-    /// are dropped. A subnet-cap violation only affects the address that was
-    /// connected, so only the violating connection is closed.
+    /// Over the high watermark, the peer is the unit: `self.connected.len()` is
+    /// the number of connected peers (a multi-connection peer counts once), and
+    /// when it is exceeded all of the peer's connections are dropped. A
+    /// subnet-cap violation only affects the address that was connected, so only
+    /// the violating connection is closed.
     fn enforce_connection_limits(
         &mut self,
         peer_id: PeerId,
@@ -532,7 +534,7 @@ impl EventLoop {
         let over_high_water = self.connected.len() > self.settings.high_water && !exempt;
         if over_high_water {
             info!(
-                "Disconnecting {} (over high water; subnet cap exceeded: {})",
+                "Disconnecting {} (over high water; subnet would also reject: {})",
                 peer_id,
                 subnet_verdict == Verdict::Reject,
             );
