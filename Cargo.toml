@@ -1,20 +1,22 @@
 [package]
 name = "aleph-p2p-service"
-version = "0.1.5"
+version = "2.0.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web = "4.9.0"
+# Default features disabled: we only serve /metrics and /health, and the
+# default "cookies" feature pulls cookie 0.16, which no longer compiles
+# against current versions of the time crate (E0119 on fresh resolutions).
+actix-web = { version = "4.9.0", default-features = false, features = ["macros"] }
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.26", features = ["derive"] }
 env_logger = "0.11.6"
 futures = "0.3.31"
-lapin = "2.5.0"
-libp2p = { version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "rsa", "serde", "tcp", "tokio", "yamux", "metrics"] }
-libp2p-mplex = "0.39.0"
+libp2p = { version = "0.56", features = ["dns", "gossipsub", "identify", "macros", "noise", "rsa", "serde", "tcp", "tokio", "yamux"] }
+libp2p-mplex = "0.43"
 log = "0.4.22"
 # Note: by default, the sentry package requires OpenSSL. We use rustls instead to avoid depending on system packages.
 sentry = { version = "0.31.0", features = ["log", "panic", "reqwest", "rustls"], default-features = false }
@@ -22,8 +24,33 @@ sentry-actix = "0.36.0"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.135"
 serde_yaml = "0.9.34"
+# Not used directly: constrains the dependency tree. time 0.3.48 introduces
+# an impl that breaks trait coherence in several dependencies on fresh
+# resolutions (cookie, sentry-core, sentry-types, all failing with E0119).
+# Lift the cap once those dependencies have caught up.
+time = ">=0.3.36, <0.3.48"
 tokio = { version = "1.43.0", features = ["full"] }
-tokio-stream = { version = "0.1.17", features = ["time"] }
-tracing-subscriber = { version = "0.3.19", features = ["fmt"] }
+tokio-stream = { version = "0.1.17", features = ["net", "sync", "time"] }
 prometheus-client = { version = "0.23.0" }
-void = "1.0.2"
+rand = "0.8"
+tonic = "0.12"
+prost = "0.13"
+async-stream = "0.3"
+
+[dev-dependencies]
+# Old libp2p stack used by deployed nodes; kept as a dev-dependency to prove
+# gossipsub wire compatibility in tests/interop_old_libp2p.rs.
+libp2p-old = { package = "libp2p", version = "0.51.3", features = ["dns", "gossipsub", "macros", "noise", "tcp", "tokio", "yamux"] }
+tempfile = "3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[patch.crates-io]
+# core2 0.4.0 is yanked from crates.io; pin to a committed copy so the build works
+# without needing a pre-populated registry cache.
+# KEEP this patch: it is required by the libp2p 0.51 interop-test dev-dependency
+# (the main crate's libp2p 0.56 no longer needs core2, but 0.51 does).
+# Remove this patch and the patches/ directory only when that dev-dependency goes away.
+# Check with: cargo tree -i core2
+core2 = { path = "patches/core2-0.4.0" }

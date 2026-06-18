@@ -1,15 +1,16 @@
 use actix_web::web;
+use libp2p::PeerId;
+
+use crate::metrics::Metrics;
 
 pub mod endpoints;
 
+pub struct AppState {
+    pub peer_id: PeerId,
+    pub metrics: Metrics,
+}
+
 pub fn config(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/api").service(
-            web::scope("/p2p")
-                .route("/identify", web::get().to(endpoints::identity::identify))
-                .route("/dial", web::post().to(endpoints::dial::dial)),
-        ),
-    )
-    .route("/metrics", web::get().to(endpoints::metrics))
-    .route("/health", web::get().to(endpoints::health));
+    cfg.route("/metrics", web::get().to(endpoints::metrics))
+        .route("/health", web::get().to(endpoints::health));
 }

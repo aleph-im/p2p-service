@@ -8,28 +8,39 @@ pub struct Port(pub u16);
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(default)]
 pub struct P2PConfig {
-    /// Port of the REST API dedicated to calls between peers.
-    pub http_port: Port,
     /// Port to use for P2P communication.
     pub port: Port,
-    /// Port of the P2P daemon control API.
-    pub control_port: Port,
-    /// Response port for the P2P daemon.
-    pub listen_port: Port,
-    /// URL of the P2P daemon.
-    pub daemon_host: String,
-    /// P2P reconnection delay, in case of error.
-    pub reconnect_delay: u32,
-    /// Name of the "alive" topic.
-    pub alive_topic: String,
-    /// Protocols to use for P2P communication.
-    pub clients: Vec<String>,
+    /// Host/interface the gRPC control/pubsub API binds to. Defaults to
+    /// 0.0.0.0 (all interfaces) for cross-container clients; set to 127.0.0.1
+    /// when the client is co-located, as the API is unauthenticated.
+    pub grpc_host: String,
+    /// Port of the gRPC control/pubsub API.
+    /// `control_port` is the legacy key for this setting.
+    #[serde(alias = "control_port")]
+    pub grpc_port: Port,
+    /// Port of the HTTP metrics/health server.
+    pub metrics_port: Port,
     /// Bootstrap peers (multiaddr format).
     pub peers: Vec<Multiaddr>,
     /// Topics to subscribe to.
     pub topics: Vec<String>,
-    /// Number of API workers.
+    /// Number of HTTP metrics server workers. The server only serves
+    /// /metrics and /health, so 1 worker is typically sufficient.
     pub nb_api_workers: usize,
+    /// Path of the persisted peerstore file.
+    pub peerstore_path: std::path::PathBuf,
+    /// Maintain at least this many connections (maintenance dials below it).
+    pub low_water: usize,
+    /// Disconnect non-protected peers above this many connected peers.
+    /// Enforcement is peer-level: a peer with multiple connections counts once.
+    pub high_water: usize,
+    /// Maximum connections per IPv4 /24 subnet for non-protected peers.
+    pub per_subnet_cap: usize,
+    /// Maximum share of high_water that protected (preferred) peers may occupy.
+    pub max_protected_share: f32,
+    /// Seconds between mesh maintenance passes (bootstrap anchoring,
+    /// preferred-peer dialing, low-water refill from the peerstore).
+    pub maintenance_interval_secs: u64,
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -37,14 +48,10 @@ const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be v
 impl Default for P2PConfig {
     fn default() -> Self {
         P2PConfig {
-            http_port: Port(4024),
             port: Port(4025),
-            control_port: Port(4030),
-            listen_port: Port(4031),
-            daemon_host: "p2pd".to_owned(),
-            reconnect_delay: 60,
-            alive_topic: "ALIVE".to_owned(),
-            clients: vec!["http".to_owned()],
+            grpc_host: "0.0.0.0".to_owned(),
+            grpc_port: Port(4030),
+            metrics_port: Port(4040),
             peers: vec![
                 "/dns/api2.aleph.im/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
                     .parse()
@@ -55,6 +62,12 @@ impl Default for P2PConfig {
             ],
             topics: vec!["ALIVE".to_owned(), "ALEPH-TEST".to_owned()],
             nb_api_workers: 4,
+            peerstore_path: std::path::PathBuf::from("peerstore.json"),
+            low_water: 80,
+            high_water: 160,
+            per_subnet_cap: 4,
+            max_protected_share: 0.5,
+            maintenance_interval_secs: 30,
         }
     }
 }
@@ -67,41 +80,50 @@ pub struct SentryConfig {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(default)]
-pub struct RabbitMqConfig {
-    /// The hostname of the RabbitMQ instance.
-    pub host: String,
-    /// The AMQP port of the RabbitMQ instance.
-    pub port: Port,
-    /// Username.
-    pub username: String,
-    /// Password.
-    pub password: String,
-    /// Name of the exchange used to publish messages on the P2P network.
-    pub pub_exchange: String,
-    /// Name of the exchange used by the service to relay messages received from the P2P network.
-    pub sub_exchange: String,
-}
-
-impl Default for RabbitMqConfig {
-    fn default() -> Self {
-        RabbitMqConfig {
-            host: "127.0.0.1".to_owned(),
-            port: Port(5672),
-            username: "guest".to_owned(),
-            password: "guest".to_owned(),
-            pub_exchange: "p2p-publish".to_owned(),
-            sub_exchange: "p2p-subscribe".to_owned(),
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AppConfig {
     #[serde(default)]
     pub p2p: P2PConfig,
     #[serde(default)]
     pub sentry: SentryConfig,
-    #[serde(default)]
-    pub rabbitmq: RabbitMqConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Legacy configs from the previous (python) p2p service must keep working.
+    /// Two distinct guarantees are exercised here:
+    ///   1. `control_port` is mapped to `grpc_port` via serde alias (proven with
+    ///      a NON-default value so a coincidental default cannot mask a failure).
+    ///   2. Removed keys (http_port, listen_port, daemon_host, reconnect_delay,
+    ///      alive_topic, clients) are silently ignored rather than causing a
+    ///      parse error. They have no equivalent in this service and are
+    ///      intentionally dropped, not remapped.
+    #[test]
+    fn legacy_control_port_maps_and_removed_keys_are_ignored() {
+        let yaml = r#"
+p2p:
+  http_port: 4024
+  port: 4025
+  control_port: 4031
+  listen_port: 4031
+  daemon_host: p2p-service
+  reconnect_delay: 60
+  alive_topic: ALIVE
+  clients: [http]
+  topics: [ALIVE, ALEPH-TEST]
+rabbitmq:
+  host: rabbitmq
+  username: aleph-p2p
+  password: secret
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).expect("legacy config should parse");
+        assert_eq!(config.p2p.port.0, 4025);
+        // 4031 (not the 4030 default): proves control_port -> grpc_port mapping.
+        assert_eq!(config.p2p.grpc_port.0, 4031);
+        assert_eq!(
+            config.p2p.topics,
+            vec!["ALIVE".to_string(), "ALEPH-TEST".to_string()]
+        );
+    }
 }
