@@ -263,9 +263,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics: metrics.clone(),
     });
 
-    // A (host, port) tuple, unlike "host:port", accepts bare IPv6 hosts such as "::".
+    // A (host, port) tuple, unlike "host:port", accepts bare IPv6 hosts such
+    // as "::"; brackets ("[::]") are trimmed first so both spellings work.
     let http_server_bind_address = (
-        app_config.p2p.metrics_host.clone(),
+        app_config.p2p.metrics_bind_host().to_owned(),
         app_config.p2p.metrics_port.0,
     );
     let http_server = HttpServer::new(move || {

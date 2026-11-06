@@ -24,7 +24,8 @@ pub struct P2PConfig {
     #[serde(alias = "control_port")]
     pub grpc_port: Port,
     /// Host/interface the HTTP metrics/health server binds to. Defaults to
-    /// 0.0.0.0 (all IPv4 interfaces); use `::` to also accept IPv6 scrapes.
+    /// 0.0.0.0 (all IPv4 interfaces); use `::` (or `[::]`) to also accept
+    /// IPv6 scrapes. Brackets around an IPv6 address are optional.
     pub metrics_host: String,
     /// Port of the HTTP metrics/health server.
     pub metrics_port: Port,
@@ -50,6 +51,17 @@ pub struct P2PConfig {
     /// Seconds between mesh maintenance passes (bootstrap anchoring,
     /// preferred-peer dialing, low-water refill from the peerstore).
     pub maintenance_interval_secs: u64,
+}
+
+impl P2PConfig {
+    /// `metrics_host` without surrounding brackets, so `[::]` and `::` both
+    /// work in the `(host, port)` bind tuple.
+    pub fn metrics_bind_host(&self) -> &str {
+        let host = self.metrics_host.as_str();
+        host.strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
+    }
 }
 
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
@@ -155,5 +167,18 @@ rabbitmq:
         let config: AppConfig = serde_yaml::from_str(yaml).expect("config should parse");
         assert!(!config.p2p.listen_ipv6);
         assert_eq!(config.p2p.metrics_host, "::");
+    }
+
+    #[test]
+    fn metrics_bind_host_trims_brackets() {
+        let host = |h: &str| P2PConfig {
+            metrics_host: h.to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(host("[::]").metrics_bind_host(), "::");
+        assert_eq!(host("::").metrics_bind_host(), "::");
+        assert_eq!(host("[::1]").metrics_bind_host(), "::1");
+        assert_eq!(host("0.0.0.0").metrics_bind_host(), "0.0.0.0");
+        assert_eq!(host("localhost").metrics_bind_host(), "localhost");
     }
 }

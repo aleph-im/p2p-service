@@ -73,7 +73,7 @@ All fields have defaults; an empty `p2p: {}` section is valid.
 | `p2p.listen_ipv6` | `true` | Also listen for P2P connections on `/ip6/::/tcp/<port>`, next to `/ip4/0.0.0.0/tcp/<port>`. If IPv6 is unavailable, a warning is logged and the node runs IPv4-only. |
 | `p2p.grpc_host` | `0.0.0.0` | Interface the gRPC API binds to. The API is unauthenticated; set to `127.0.0.1` when the client is co-located, or keep `0.0.0.0` for cross-container clients behind a firewall. |
 | `p2p.grpc_port` | `4030` | Port of the gRPC control/pubsub API. Legacy alias: `control_port`. |
-| `p2p.metrics_host` | `0.0.0.0` | Interface the HTTP metrics/health server binds to. Use `::` to accept IPv6 scrapes as well. |
+| `p2p.metrics_host` | `0.0.0.0` | Interface the HTTP metrics/health server binds to. Use `::` to accept IPv6 scrapes; brackets are optional (`::` and `[::]` are equivalent). `::` also serves IPv4 only while `net.ipv6.bindv6only=0` (the Linux default), as the socket leaves IPV6_V6ONLY unset. |
 | `p2p.metrics_port` | `4040` | Port of the HTTP metrics/health server. |
 | `p2p.peers` | aleph.im bootstrap nodes | Bootstrap peers, multiaddr format with trailing `/p2p/<peer id>`. |
 | `p2p.topics` | `[ALIVE, ALEPH-TEST]` | Gossipsub topics to subscribe to at startup. |

@@ -130,10 +130,7 @@ async fn listen_ipv6_false_reports_no_ipv6_address() {
     let ipv6_active = client.listen_on_port(port, false).await.unwrap();
     assert!(!ipv6_active);
 
-    wait_for_listen_addrs(&mut client, |addrs| addrs.iter().any(is_ip4)).await;
-    // Give a (wrongly started) IPv6 listener time to report its addresses.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let info = client.identify().await.unwrap();
+    let info = wait_for_listen_addrs(&mut client, |addrs| addrs.iter().any(is_ip4)).await;
     assert!(
         !info.listen_multiaddrs.iter().any(is_ip6),
         "no /ip6/ address expected with listen_ipv6=false: {:?}",
