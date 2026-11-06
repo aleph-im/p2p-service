@@ -5,7 +5,6 @@ use std::time::Duration;
 use actix_web::web::Data;
 use actix_web::{middleware, App, HttpServer};
 use clap::Parser;
-use libp2p::multiaddr::Protocol;
 use libp2p::{gossipsub, identity, Multiaddr, PeerId};
 use log::{debug, error, info, warn};
 
@@ -182,18 +181,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn the network task and run it in the background.
     let p2p_event_loop_handle = tokio::spawn(network_event_loop.run());
 
-    // Start listening
-    {
-        let mut p2p_bind_multiaddr: Multiaddr = "/ip4/0.0.0.0"
-            .parse()
-            .expect("The hardcoded string should be a valid IPv4 multiaddr");
-        p2p_bind_multiaddr.push(Protocol::Tcp(app_config.p2p.port.0));
-
-        network_client
-            .start_listening(p2p_bind_multiaddr)
-            .await
-            .expect("Listening not to fail.");
-    }
+    // Start listening: IPv4 is mandatory, IPv6 is best-effort.
+    network_client
+        .listen_on_port(app_config.p2p.port.0, app_config.p2p.listen_ipv6)
+        .await
+        .map_err(|e| format!("could not listen on the P2P port: {}", e))?;
 
     // Dedup topics (preserve order, discard duplicates).
     let topics: Vec<String> = {
@@ -271,7 +263,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics: metrics.clone(),
     });
 
-    let http_server_bind_address = format!("0.0.0.0:{}", &app_config.p2p.metrics_port.0);
+    // A (host, port) tuple, unlike "host:port", accepts bare IPv6 hosts such
+    // as "::"; brackets ("[::]") are trimmed first so both spellings work.
+    let http_server_bind_address = (
+        app_config.p2p.metrics_bind_host().to_owned(),
+        app_config.p2p.metrics_port.0,
+    );
     let http_server = HttpServer::new(move || {
         App::new()
             .app_data(Data::clone(&app_data))

@@ -10,6 +10,11 @@ pub struct Port(pub u16);
 pub struct P2PConfig {
     /// Port to use for P2P communication.
     pub port: Port,
+    /// Also listen for P2P connections on IPv6 (`/ip6/::/tcp/<port>`), in
+    /// addition to IPv4 (`/ip4/0.0.0.0/tcp/<port>`). The IPv6 socket is
+    /// IPv6-only, so both listeners share the port. Startup continues with a
+    /// warning when IPv6 is unavailable on the host.
+    pub listen_ipv6: bool,
     /// Host/interface the gRPC control/pubsub API binds to. Defaults to
     /// 0.0.0.0 (all interfaces) for cross-container clients; set to 127.0.0.1
     /// when the client is co-located, as the API is unauthenticated.
@@ -18,6 +23,10 @@ pub struct P2PConfig {
     /// `control_port` is the legacy key for this setting.
     #[serde(alias = "control_port")]
     pub grpc_port: Port,
+    /// Host/interface the HTTP metrics/health server binds to. Defaults to
+    /// 0.0.0.0 (all IPv4 interfaces); use `::` (or `[::]`) to also accept
+    /// IPv6 scrapes. Brackets around an IPv6 address are optional.
+    pub metrics_host: String,
     /// Port of the HTTP metrics/health server.
     pub metrics_port: Port,
     /// Bootstrap peers (multiaddr format).
@@ -34,7 +43,8 @@ pub struct P2PConfig {
     /// Disconnect non-protected peers above this many connected peers.
     /// Enforcement is peer-level: a peer with multiple connections counts once.
     pub high_water: usize,
-    /// Maximum connections per IPv4 /24 subnet for non-protected peers.
+    /// Maximum connections per subnet (IPv4 /24 or IPv6 /48) for
+    /// non-protected peers.
     pub per_subnet_cap: usize,
     /// Maximum share of high_water that protected (preferred) peers may occupy.
     pub max_protected_share: f32,
@@ -43,14 +53,27 @@ pub struct P2PConfig {
     pub maintenance_interval_secs: u64,
 }
 
+impl P2PConfig {
+    /// `metrics_host` without surrounding brackets, so `[::]` and `::` both
+    /// work in the `(host, port)` bind tuple.
+    pub fn metrics_bind_host(&self) -> &str {
+        let host = self.metrics_host.as_str();
+        host.strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
+    }
+}
+
 const PEER_MULTIADDR_ERROR_MESSAGE: &str = "bootstrap peer multiaddr should be valid";
 
 impl Default for P2PConfig {
     fn default() -> Self {
         P2PConfig {
             port: Port(4025),
+            listen_ipv6: true,
             grpc_host: "0.0.0.0".to_owned(),
             grpc_port: Port(4030),
+            metrics_host: "0.0.0.0".to_owned(),
             metrics_port: Port(4040),
             peers: vec![
                 "/dns/api2.aleph.im/tcp/4025/p2p/QmZkurbY2G2hWay59yiTgQNaQxHSNzKZFt2jbnwJhQcKgV"
@@ -125,5 +148,37 @@ rabbitmq:
             config.p2p.topics,
             vec!["ALIVE".to_string(), "ALEPH-TEST".to_string()]
         );
+    }
+
+    /// A config written before `listen_ipv6`/`metrics_host` existed must keep
+    /// parsing and pick up the defaults.
+    #[test]
+    fn missing_ipv6_keys_use_defaults() {
+        let yaml = "p2p:\n  port: 4025\n  metrics_port: 4041\n";
+        let config: AppConfig = serde_yaml::from_str(yaml).expect("config should parse");
+        assert!(config.p2p.listen_ipv6);
+        assert_eq!(config.p2p.metrics_host, "0.0.0.0");
+        assert_eq!(config.p2p.metrics_port.0, 4041);
+    }
+
+    #[test]
+    fn listen_ipv6_false_and_metrics_host_are_honoured() {
+        let yaml = "p2p:\n  listen_ipv6: false\n  metrics_host: \"::\"\n";
+        let config: AppConfig = serde_yaml::from_str(yaml).expect("config should parse");
+        assert!(!config.p2p.listen_ipv6);
+        assert_eq!(config.p2p.metrics_host, "::");
+    }
+
+    #[test]
+    fn metrics_bind_host_trims_brackets() {
+        let host = |h: &str| P2PConfig {
+            metrics_host: h.to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(host("[::]").metrics_bind_host(), "::");
+        assert_eq!(host("::").metrics_bind_host(), "::");
+        assert_eq!(host("[::1]").metrics_bind_host(), "::1");
+        assert_eq!(host("0.0.0.0").metrics_bind_host(), "0.0.0.0");
+        assert_eq!(host("localhost").metrics_bind_host(), "localhost");
     }
 }

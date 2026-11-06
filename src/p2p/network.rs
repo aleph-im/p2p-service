@@ -108,7 +108,8 @@ pub async fn new(
                 // positive bonus, everyone else stays at the neutral default of 0.
                 app_specific_weight: 1.0,
                 // P6 IP-colocation stays at its default (penalty above 10 peers
-                // on the same IP, unreachable in practice given our /24 caps).
+                // on the same IP, unreachable in practice given our /24 and
+                // /48 subnet caps).
                 ..Default::default()
             };
             gossipsub
@@ -242,6 +243,44 @@ impl P2PClient {
         let (sender, receiver) = oneshot::channel();
         self.send_command_and_wait(Command::StartListening { addr, sender }, receiver)
             .await
+    }
+
+    /// Starts the P2P listeners on `port`: `/ip4/0.0.0.0/tcp/<port>` always
+    /// and, when `listen_ipv6` is set, `/ip6/::/tcp/<port>` as well.
+    ///
+    /// The IPv4 listener is mandatory: its failure is returned as an error.
+    /// The IPv6 listener is best-effort: on hosts or containers without IPv6
+    /// its failure is logged as a warning. Returns whether the IPv6 listener
+    /// was started.
+    ///
+    /// Both sockets can share the port because libp2p-tcp sets IPV6_V6ONLY
+    /// on IPv6 sockets, so the `::` listener never claims IPv4 traffic.
+    pub async fn listen_on_port(
+        &mut self,
+        port: u16,
+        listen_ipv6: bool,
+    ) -> Result<bool, Box<dyn Error + Send>> {
+        let ip4 = Multiaddr::empty()
+            .with(Protocol::Ip4(std::net::Ipv4Addr::UNSPECIFIED))
+            .with(Protocol::Tcp(port));
+        self.start_listening(ip4).await?;
+
+        if !listen_ipv6 {
+            return Ok(false);
+        }
+        let ip6 = Multiaddr::empty()
+            .with(Protocol::Ip6(std::net::Ipv6Addr::UNSPECIFIED))
+            .with(Protocol::Tcp(port));
+        match self.start_listening(ip6.clone()).await {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                warn!(
+                    "Could not listen on {} (is IPv6 available?), continuing with IPv4 only: {}",
+                    ip6, e
+                );
+                Ok(false)
+            }
+        }
     }
 
     pub async fn dial_and_wait(
