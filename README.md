@@ -70,20 +70,28 @@ All fields have defaults; an empty `p2p: {}` section is valid.
 | Field | Default | Description |
 | --- | --- | --- |
 | `p2p.port` | `4025` | TCP port for P2P (libp2p) communication. |
+| `p2p.listen_ipv6` | `true` | Also listen for P2P connections on `/ip6/::/tcp/<port>`, next to `/ip4/0.0.0.0/tcp/<port>`. If IPv6 is unavailable, a warning is logged and the node runs IPv4-only. |
 | `p2p.grpc_host` | `0.0.0.0` | Interface the gRPC API binds to. The API is unauthenticated; set to `127.0.0.1` when the client is co-located, or keep `0.0.0.0` for cross-container clients behind a firewall. |
 | `p2p.grpc_port` | `4030` | Port of the gRPC control/pubsub API. Legacy alias: `control_port`. |
+| `p2p.metrics_host` | `0.0.0.0` | Interface the HTTP metrics/health server binds to. Use `::` to accept IPv6 scrapes as well. |
 | `p2p.metrics_port` | `4040` | Port of the HTTP metrics/health server. |
 | `p2p.peers` | aleph.im bootstrap nodes | Bootstrap peers, multiaddr format with trailing `/p2p/<peer id>`. |
 | `p2p.topics` | `[ALIVE, ALEPH-TEST]` | Gossipsub topics to subscribe to at startup. |
 | `p2p.nb_api_workers` | `4` | Workers of the HTTP metrics server. 1 is typically sufficient as it only serves metrics and health checks. |
 | `p2p.low_water` | `80` | Maintain at least this many connections (the maintenance loop dials known peers below it). |
 | `p2p.high_water` | `160` | Disconnect non-protected peers above this many connections. |
-| `p2p.per_subnet_cap` | `4` | Maximum connections per IPv4 /24 subnet for non-protected peers. |
+| `p2p.per_subnet_cap` | `4` | Maximum connections per subnet for non-protected peers: per IPv4 /24 and per IPv6 /48 (the usual per-site allocation). |
 | `p2p.max_protected_share` | `0.5` | Maximum share of `high_water` that preferred peers may occupy. |
 | `p2p.peerstore_path` | `peerstore.json` | Path of the persisted peerstore file. |
 | `p2p.maintenance_interval_secs` | `30` | Seconds between mesh maintenance passes. |
 | `sentry.dsn` | unset | Sentry DSN; error reporting is disabled when unset. |
 | `sentry.traces_sample_rate` | unset | Sentry traces sample rate. |
+
+With `listen_ipv6` enabled, the node is reachable over IPv6 only if the
+`/ip6/::` listener is: in Docker, the container's network must have IPv6
+enabled (`enable_ipv6: true` on the compose network, or `--ipv6` on
+`docker network create`), otherwise the container only has an IPv6
+loopback and peers cannot reach the IPv6 listener from outside.
 
 The peerstore file persists known peers and their dialable addresses across
 restarts, so a restarted node can refill its connection table without relying
