@@ -15,7 +15,7 @@ use libp2p::identify;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
-use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
+use libp2p::{connection_limits, identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 
 use crate::metrics::Metrics;
@@ -34,6 +34,17 @@ pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
 /// ConnectionEstablished (for peers that connect later).
 pub const PREFERRED_PEER_APP_SCORE: f64 = 100.0;
 
+/// Maximum number of inbound connections in the transport phase (TCP accepted,
+/// handshake/negotiation still in progress). Pending connections each hold a
+/// socket, so an unbounded flood can exhaust the process file-descriptor table
+/// before the peer-level high-water check gets a chance to prune anything.
+const MAX_PENDING_INCOMING: u32 = 128;
+
+/// Maximum established connections to a single peer. `high_water` counts
+/// connected peers, not connections, so without this a single peer could hold
+/// an unbounded number of sockets while still counting once.
+const MAX_ESTABLISHED_PER_PEER: u32 = 3;
+
 /// Connection-limit parameters for the event loop.
 #[derive(Debug, Clone)]
 pub struct NetworkSettings {
@@ -47,6 +58,7 @@ pub struct NetworkSettings {
 pub struct Behaviour {
     gossipsub: GossipsubBehaviour,
     identify: identify::Behaviour,
+    connection_limits: connection_limits::Behaviour,
 }
 
 fn make_gossipsub_config() -> gossipsub::Config {
@@ -87,6 +99,12 @@ pub async fn new(
     subscriptions: Arc<Subscriptions>,
     peerstore: Arc<Mutex<PeerStore>>,
 ) -> Result<(P2PClient, EventLoop), Box<dyn Error>> {
+    // Backstop above the peer-level high-water mark: inbound connections are
+    // always allowed at least this many sockets, while the swarm still prunes
+    // the peer table at `high_water`.
+    let max_established_incoming =
+        u32::try_from(settings.high_water.saturating_mul(2)).unwrap_or(u32::MAX);
+
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
         .with_tcp(
@@ -118,9 +136,16 @@ pub async fn new(
                 identify::Config::new(IDENTIFY_PROTOCOL_VERSION.to_string(), key.public())
                     .with_agent_version(format!("aleph-p2p-service/{}", env!("CARGO_PKG_VERSION"))),
             );
+            let connection_limits = connection_limits::Behaviour::new(
+                connection_limits::ConnectionLimits::default()
+                    .with_max_pending_incoming(Some(MAX_PENDING_INCOMING))
+                    .with_max_established_incoming(Some(max_established_incoming))
+                    .with_max_established_per_peer(Some(MAX_ESTABLISHED_PER_PEER)),
+            );
             Behaviour {
                 gossipsub,
                 identify,
+                connection_limits,
             }
         })?
         // Gossipsub mesh links see periodic traffic; non-mesh connections

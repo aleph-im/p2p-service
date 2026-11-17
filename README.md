@@ -116,6 +116,26 @@ cargo build --release
 A Docker image can be built with [scripts/docker/build-docker-image.sh](scripts/docker/build-docker-image.sh),
 and `docker compose up` in [scripts/demo](scripts/demo) starts a ready-to-use service.
 
+### File descriptor limits
+
+Each P2P, gRPC and HTTP connection holds a file descriptor. Containers started
+with Docker's default `nofile` limit (1024 on many hosts) can run out under
+connection churn, which surfaces as `error accepting connection: Too many open
+files (os error 24)`. Run the container with a higher limit, for example:
+
+```shell
+docker run --ulimit nofile=65536:65536 ...
+```
+
+or in Compose:
+
+```yaml
+ulimits:
+  nofile:
+    soft: 65536
+    hard: 65536
+```
+
 ## FAQ
 
 ### How can I create a private key?

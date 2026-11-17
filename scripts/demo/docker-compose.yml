@@ -10,6 +10,10 @@ services:
       - ./sample-key.bin:/etc/p2p-service/node-secret.pkcs8.der
     environment:
       RUST_LOG: info
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "4025:4025"
       - "127.0.0.1:4030:4030"
