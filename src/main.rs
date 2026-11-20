@@ -122,13 +122,9 @@ fn configure_logging() {
 
 fn configure_sentry(app_config: &AppConfig) -> Option<sentry::ClientInitGuard> {
     app_config.sentry.dsn.as_ref().map(|dsn| {
-        sentry::init((
-            dsn.clone(),
-            sentry::ClientOptions {
-                release: sentry::release_name!(),
-                ..Default::default()
-            },
-        ))
+        let mut options = sentry::ClientOptions::default();
+        options.release = sentry::release_name!();
+        sentry::init((dsn.clone(), options))
     })
 }
 
