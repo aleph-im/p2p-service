@@ -1,5 +1,5 @@
 # Build stage: the full Rust toolchain, kept out of the final image.
-FROM rust:1.88 AS builder
+FROM rust:1.92-bookworm AS builder
 WORKDIR /usr/src/p2p-service
 RUN apt-get update && apt-get install -y protobuf-compiler
 COPY . .

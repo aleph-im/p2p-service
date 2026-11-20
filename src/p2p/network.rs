@@ -84,7 +84,7 @@ fn make_gossipsub_config() -> gossipsub::Config {
         .validation_mode(ValidationMode::Strict)
         .message_id_fn(message_id_fn)
         .max_transmit_size(262144)
-        .max_messages_per_rpc(Some(100))
+        .max_publish_messages(100)
         .duplicate_cache_time(Duration::from_secs(1800))
         // Peer exchange: advertise alternative peers on PRUNE (rust-libp2p
         // exchanges peer IDs); helps mesh self-healing alongside the
