@@ -14,8 +14,8 @@ use libp2p::gossipsub::{
 use libp2p::identify;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
-use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
-use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
+use libp2p::swarm::{ConnectionId, DialError, ListenError, NetworkBehaviour, SwarmEvent};
+use libp2p::{connection_limits, identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 
 use crate::metrics::Metrics;
@@ -34,6 +34,23 @@ pub const IDENTIFY_PROTOCOL_VERSION: &str = "/aleph/id/1.0.0";
 /// ConnectionEstablished (for peers that connect later).
 pub const PREFERRED_PEER_APP_SCORE: f64 = 100.0;
 
+/// Maximum number of inbound connections in the transport phase (TCP accepted,
+/// handshake/negotiation still in progress). Pending connections each hold a
+/// socket, so an unbounded flood can exhaust the process file-descriptor table
+/// before the peer-level high-water check gets a chance to prune anything.
+///
+/// libp2p frees a pending slot only when the connection establishes or fails;
+/// there is no handshake timeout. Peers that open a socket and stall the
+/// handshake can therefore occupy every slot and block new inbound connections
+/// until their sockets die. The cap still bounds fd usage; tune it if
+/// legitimate handshakes are starved.
+const MAX_PENDING_INCOMING: u32 = 128;
+
+/// Maximum established connections to a single peer. `high_water` counts
+/// connected peers, not connections, so without this a single peer could hold
+/// an unbounded number of sockets while still counting once.
+const MAX_ESTABLISHED_PER_PEER: u32 = 3;
+
 /// Connection-limit parameters for the event loop.
 #[derive(Debug, Clone)]
 pub struct NetworkSettings {
@@ -47,6 +64,7 @@ pub struct NetworkSettings {
 pub struct Behaviour {
     gossipsub: GossipsubBehaviour,
     identify: identify::Behaviour,
+    connection_limits: connection_limits::Behaviour,
 }
 
 fn make_gossipsub_config() -> gossipsub::Config {
@@ -79,6 +97,40 @@ fn make_gossipsub_config() -> gossipsub::Config {
         .expect("static gossipsub config should be valid")
 }
 
+/// Inbound connection budget derived from the peer-level high-water mark.
+///
+/// `max_established_incoming` counts connections while `high_water` counts
+/// peers, so the budget must be larger than `MAX_ESTABLISHED_PER_PEER *
+/// high_water`: an attacker filling every peer's quota would otherwise exhaust
+/// the budget below the high-water mark, and the cap would then reject new
+/// inbound connections while peer-level pruning never fires. The extra slot
+/// lets the next inbound connection establish so `enforce_connection_limits`
+/// stays the effective governor; `connection_limits` only binds as a backstop.
+///
+/// Protected peers (bootstrap plus preferred) are exempt from peer-level
+/// pruning and sit on top of `high_water`, so their inbound connections are
+/// not covered by this budget. With a large protected set or a
+/// `max_protected_share` near 1.0, the backstop can bind before pruning; that
+/// is fail-safe: new inbound connections are refused while established ones
+/// survive.
+fn max_established_incoming(high_water: usize) -> u32 {
+    u32::try_from(
+        high_water
+            .saturating_mul(MAX_ESTABLISHED_PER_PEER as usize)
+            .saturating_add(1),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+fn make_connection_limits(settings: &NetworkSettings) -> connection_limits::Behaviour {
+    connection_limits::Behaviour::new(
+        connection_limits::ConnectionLimits::default()
+            .with_max_pending_incoming(Some(MAX_PENDING_INCOMING))
+            .with_max_established_incoming(Some(max_established_incoming(settings.high_water)))
+            .with_max_established_per_peer(Some(MAX_ESTABLISHED_PER_PEER)),
+    )
+}
+
 pub async fn new(
     id_keys: identity::Keypair,
     settings: NetworkSettings,
@@ -87,6 +139,8 @@ pub async fn new(
     subscriptions: Arc<Subscriptions>,
     peerstore: Arc<Mutex<PeerStore>>,
 ) -> Result<(P2PClient, EventLoop), Box<dyn Error>> {
+    let connection_limits = make_connection_limits(&settings);
+
     let swarm = libp2p::SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
         .with_tcp(
@@ -96,7 +150,7 @@ pub async fn new(
             (yamux::Config::default, libp2p_mplex::Config::default),
         )?
         .with_dns()?
-        .with_behaviour(|key| {
+        .with_behaviour(move |key| {
             let mut gossipsub = GossipsubBehaviour::new(
                 MessageAuthenticity::Signed(key.clone()),
                 make_gossipsub_config(),
@@ -121,6 +175,7 @@ pub async fn new(
             Behaviour {
                 gossipsub,
                 identify,
+                connection_limits,
             }
         })?
         // Gossipsub mesh links see periodic traffic; non-mesh connections
@@ -495,6 +550,10 @@ impl EventLoop {
                 }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                if matches!(&error, DialError::Denied { .. }) {
+                    self.metrics.increment_event("connection_denied_outgoing");
+                    debug!("Outgoing connection denied by connection limits: {}", error);
+                }
                 if let Some(peer_id) = peer_id {
                     if let Some(senders) = self.pending_dials.remove(&peer_id) {
                         debug!("Failed to dial {}: {}", peer_id, error);
@@ -505,6 +564,23 @@ impl EventLoop {
                     }
                 }
             }
+            SwarmEvent::IncomingConnectionError {
+                error,
+                send_back_addr,
+                ..
+            } => match error {
+                ListenError::Denied { .. } => {
+                    self.metrics.increment_event("connection_denied_incoming");
+                    debug!(
+                        "Inbound connection from {} denied by connection limits",
+                        send_back_addr
+                    );
+                }
+                error => debug!(
+                    "Incoming connection error from {}: {}",
+                    send_back_addr, error
+                ),
+            },
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
                 info!(
@@ -730,5 +806,100 @@ pub fn classify_dial_error(error: &(dyn Error + Send + 'static)) -> DialErrorKin
         Some(libp2p::swarm::DialError::WrongPeerId { .. }) => DialErrorKind::WrongPeerId,
         Some(_) => DialErrorKind::Unreachable,
         None => DialErrorKind::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p::core::ConnectedPoint;
+    use libp2p::swarm::behaviour::ConnectionEstablished;
+    use libp2p::swarm::FromSwarm;
+
+    fn settings(high_water: usize) -> NetworkSettings {
+        NetworkSettings {
+            low_water: 0,
+            high_water,
+            per_subnet_cap: 4,
+            max_protected_share: 0.5,
+        }
+    }
+
+    fn listener_endpoint() -> ConnectedPoint {
+        ConnectedPoint::Listener {
+            local_addr: "/ip4/127.0.0.1/tcp/4025".parse().unwrap(),
+            send_back_addr: "/ip4/10.0.0.1/tcp/40000".parse().unwrap(),
+        }
+    }
+
+    /// A peer filling its per-peer quota for every peer up to `high_water`
+    /// must not exhaust the inbound budget: the next connection still
+    /// establishes, so peer-level pruning is what fires.
+    #[test]
+    fn inbound_budget_leaves_room_for_peer_level_pruning() {
+        for high_water in [0, 1, 2, 10, 160, 1000] {
+            let budget = max_established_incoming(high_water) as usize;
+            assert!(
+                budget > MAX_ESTABLISHED_PER_PEER as usize * high_water,
+                "budget {budget} must exceed the worst-case fill at high_water {high_water}"
+            );
+        }
+        assert_eq!(max_established_incoming(usize::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn connection_above_the_per_peer_cap_is_denied() {
+        let mut limits = make_connection_limits(&settings(160));
+        let peer = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let endpoint = listener_endpoint();
+        let addr: Multiaddr = "/ip4/10.0.0.1/tcp/40000".parse().unwrap();
+
+        for index in 0..MAX_ESTABLISHED_PER_PEER {
+            let connection_id = ConnectionId::new_unchecked(index as usize);
+            limits
+                .handle_established_inbound_connection(connection_id, peer, &addr, &addr)
+                .expect("connections up to the per-peer cap should be accepted");
+            limits.on_swarm_event(FromSwarm::ConnectionEstablished(ConnectionEstablished {
+                peer_id: peer,
+                connection_id,
+                endpoint: &endpoint,
+                failed_addresses: &[],
+                other_established: index as usize,
+            }));
+        }
+
+        let denied = limits.handle_established_inbound_connection(
+            ConnectionId::new_unchecked(MAX_ESTABLISHED_PER_PEER as usize),
+            peer,
+            &addr,
+            &addr,
+        );
+        assert!(
+            denied.is_err(),
+            "a connection above the per-peer cap should be denied"
+        );
+    }
+
+    #[test]
+    fn pending_inbound_flood_is_capped() {
+        let mut limits = make_connection_limits(&settings(160));
+        let addr: Multiaddr = "/ip4/10.0.0.1/tcp/40000".parse().unwrap();
+
+        for index in 0..MAX_PENDING_INCOMING {
+            let connection_id = ConnectionId::new_unchecked(index as usize);
+            limits
+                .handle_pending_inbound_connection(connection_id, &addr, &addr)
+                .expect("connections up to the pending cap should be accepted");
+        }
+
+        let denied = limits.handle_pending_inbound_connection(
+            ConnectionId::new_unchecked(MAX_PENDING_INCOMING as usize),
+            &addr,
+            &addr,
+        );
+        assert!(
+            denied.is_err(),
+            "a connection above the pending inbound cap should be denied"
+        );
     }
 }
