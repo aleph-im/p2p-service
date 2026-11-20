@@ -14,7 +14,7 @@ use libp2p::gossipsub::{
 use libp2p::identify;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::dial_opts::DialOpts;
-use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{ConnectionId, DialError, ListenError, NetworkBehaviour, SwarmEvent};
 use libp2p::{connection_limits, identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm};
 use log::{debug, info, warn};
 
@@ -38,6 +38,12 @@ pub const PREFERRED_PEER_APP_SCORE: f64 = 100.0;
 /// handshake/negotiation still in progress). Pending connections each hold a
 /// socket, so an unbounded flood can exhaust the process file-descriptor table
 /// before the peer-level high-water check gets a chance to prune anything.
+///
+/// libp2p frees a pending slot only when the connection establishes or fails;
+/// there is no handshake timeout. Peers that open a socket and stall the
+/// handshake can therefore occupy every slot and block new inbound connections
+/// until their sockets die. The cap still bounds fd usage; tune it if
+/// legitimate handshakes are starved.
 const MAX_PENDING_INCOMING: u32 = 128;
 
 /// Maximum established connections to a single peer. `high_water` counts
@@ -100,6 +106,13 @@ fn make_gossipsub_config() -> gossipsub::Config {
 /// inbound connections while peer-level pruning never fires. The extra slot
 /// lets the next inbound connection establish so `enforce_connection_limits`
 /// stays the effective governor; `connection_limits` only binds as a backstop.
+///
+/// Protected peers (bootstrap plus preferred) are exempt from peer-level
+/// pruning and sit on top of `high_water`, so their inbound connections are
+/// not covered by this budget. With a large protected set or a
+/// `max_protected_share` near 1.0, the backstop can bind before pruning; that
+/// is fail-safe: new inbound connections are refused while established ones
+/// survive.
 fn max_established_incoming(high_water: usize) -> u32 {
     u32::try_from(
         high_water
@@ -537,6 +550,10 @@ impl EventLoop {
                 }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                if matches!(&error, DialError::Denied { .. }) {
+                    self.metrics.increment_event("connection_denied_outgoing");
+                    debug!("Outgoing connection denied by connection limits: {}", error);
+                }
                 if let Some(peer_id) = peer_id {
                     if let Some(senders) = self.pending_dials.remove(&peer_id) {
                         debug!("Failed to dial {}: {}", peer_id, error);
@@ -547,6 +564,23 @@ impl EventLoop {
                     }
                 }
             }
+            SwarmEvent::IncomingConnectionError {
+                error,
+                send_back_addr,
+                ..
+            } => match error {
+                ListenError::Denied { .. } => {
+                    self.metrics.increment_event("connection_denied_incoming");
+                    debug!(
+                        "Inbound connection from {} denied by connection limits",
+                        send_back_addr
+                    );
+                }
+                error => debug!(
+                    "Incoming connection error from {}: {}",
+                    send_back_addr, error
+                ),
+            },
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
                 info!(
@@ -803,13 +837,13 @@ mod tests {
     /// establishes, so peer-level pruning is what fires.
     #[test]
     fn inbound_budget_leaves_room_for_peer_level_pruning() {
-        let high_water = 160;
-        let budget = max_established_incoming(high_water);
-        assert_eq!(
-            budget as usize,
-            MAX_ESTABLISHED_PER_PEER as usize * high_water + 1
-        );
-        assert!(max_established_incoming(0) > 0);
+        for high_water in [0, 1, 2, 10, 160, 1000] {
+            let budget = max_established_incoming(high_water) as usize;
+            assert!(
+                budget > MAX_ESTABLISHED_PER_PEER as usize * high_water,
+                "budget {budget} must exceed the worst-case fill at high_water {high_water}"
+            );
+        }
         assert_eq!(max_established_incoming(usize::MAX), u32::MAX);
     }
 
